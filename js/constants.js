@@ -8,10 +8,13 @@ var DK = window.DK || {};
 
 DK.CONST = {
   // ── Resolução lógica ──────────────────────────────────────────────────────
-  W: 224,   // largura lógica do canvas (px)
-  H: 320,   // altura lógica — aumentada de 256 para 320 para dar mais respiro
-            // entre plataformas (barris podem ser pulados com folga)
-  SCALE: 3, // fator de escala inteiro para o monitor (3× = 672×960 px)
+  W: 224,   // largura lógica do canvas (px) — canvas.width interno fixo
+  H: 320,   // altura lógica — aumentada de 256→320 para dar respiro entre vigas
+            // Validação: pulo ≈ 8²/(2×0.45) ≈ 71 px > PLATFORM_GAP(52)+MARIO_H(14) ✓
+  // SCALE não é mais usado para dimensionar o canvas.
+  // main.js calcula a escala CSS dinamicamente (resizeCanvas) para preencher
+  // a viewport sem cortar. Mantemos aqui como referência de "escala mínima alvo".
+  SCALE: 3,
 
   // ── Espaçamento entre plataformas ────────────────────────────────────────
   // PLATFORM_GAP controla a distância vertical entre cada par de vigas.

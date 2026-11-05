@@ -1,24 +1,34 @@
 /* ============================================================
    DONKEY KONG CLONE — Estilos globais
-   Fundo preto, canvas centralizado, sem suavização (pixel art)
    ============================================================ */
-* {
+
+/* Remove margens e garante que html+body preencham a viewport sem scroll */
+*, *::before, *::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
-body {
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;       /* sem barra de rolagem em nenhuma circunstância */
   background: #000;
+}
+
+/* Centraliza o canvas na viewport usando flexbox */
+body {
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 100vh;
-  overflow: hidden;
 }
 
-/* image-rendering: pixelated garante que a escala 3× não suavize os pixels */
-canvas {
+/* O canvas usa display:block para não gerar espaço inline.
+   width/height em px são controlados pelo JS (resizeCanvas).
+   image-rendering preserva os pixels nítidos ao escalar. */
+#gameCanvas {
+  display: block;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+  /* sem width/height fixos aqui — JS define via .style.width/height */
 }
