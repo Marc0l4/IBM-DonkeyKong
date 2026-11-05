@@ -1,0 +1,1424 @@
+<!DOCTYPE html>
+<!--
+  =============================================================
+  DONKEY KONG CLONE — Workshop Demo
+  =============================================================
+  CONTROLES:
+    Setas Esquerda/Direita  ou  A/D  → mover o Mario
+    Espaço                           → pular (quando no chão)
+    Seta para Cima / W               → subir escadas
+    Seta para Baixo / S              → descer escadas
+    Enter                            → confirmar nas telas de menu
+
+  ARQUITETURA RESUMIDA:
+    - Um único arquivo HTML com CSS e JavaScript inline
+    - Resolução lógica 224x256 px, escalada 3x para o monitor
+    - Game loop com fixed timestep de 60 Hz (requestAnimationFrame)
+    - Máquina de estados simples: MENU → PLAYING → WIN | GAME_OVER
+    - Dados da fase separados da lógica (seção 2)
+    - Cada entidade tem update(dt) e draw(ctx)
+    - Colisões simples por AABB (Axis-Aligned Bounding Box)
+    - High score salvo em localStorage
+  =============================================================
+-->
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>Donkey Kong</title>
+  <style>
+    /* Fundo preto, canvas centralizado, sem suavização (estilo pixel art) */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+    }
+    canvas {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+"use strict";
+
+// ===== 1. CONSTANTES =====
+// Todos os números do jogo ficam aqui — sem "magic numbers" no restante do código
+const CONST = {
+  // Resolução lógica (como o arcade original)
+  W: 224,
+  H: 256,
+  // Fator de escala para o monitor (3x = 672x768 px)
+  SCALE: 3,
+
+  // Física
+  GRAVITY: 0.4,          // aceleração gravitacional (px por frame²)
+  JUMP_VY: -7.5,         // velocidade vertical inicial do pulo
+  PLAYER_SPEED: 1.5,     // velocidade horizontal do Mario
+  BARREL_SPEED: 1.2,     // velocidade horizontal do barril
+  BARREL_FALL_SPEED: 2,  // velocidade de queda do barril entre vigas
+
+  // Dimensões do Mario (hitbox)
+  MARIO_W: 10,
+  MARIO_H: 14,
+
+  // Dimensões do barril
+  BARREL_W: 10,
+  BARREL_H: 10,
+
+  // Dimensões do martelo
+  HAMMER_W: 8,
+  HAMMER_H: 10,
+
+  // Dimensões do Donkey Kong
+  DK_W: 32,
+  DK_H: 36,
+
+  // Dimensões da Pauline
+  PAULINE_W: 12,
+  PAULINE_H: 20,
+
+  // Tempo de lançamento de barril (em segundos, variação aleatória)
+  BARREL_SPAWN_MIN: 2.0,
+  BARREL_SPAWN_MAX: 4.0,
+
+  // Probabilidade de um barril descer por uma escada (0 a 1)
+  BARREL_LADDER_CHANCE: 0.25,
+
+  // Bonus inicial e decremento
+  BONUS_START: 5000,
+  BONUS_TICK: 100,        // quanto cai por vez
+  BONUS_INTERVAL: 4,      // segundos entre cada decremento
+
+  // Pontuação
+  SCORE_JUMP_BARREL: 100,
+  SCORE_HAMMER_BARREL: 300,
+
+  // Duração do martelo em segundos
+  HAMMER_DURATION: 10,
+
+  // Duração da animação de morte em segundos
+  DEATH_ANIM_TIME: 1.8,
+
+  // Número de vidas iniciais
+  INITIAL_LIVES: 3,
+
+  // Cores principais (estilo arcade)
+  CLR_BEAM:    '#d1195d', // vigas vermelho-magenta
+  CLR_LADDER:  '#00e5ff', // escadas ciano
+  CLR_BARREL:  '#e07820', // barris laranja
+  CLR_MARIO:   '#e03020', // cor base do Mario
+  CLR_HUD:     '#ffffff', // texto HUD branco
+  CLR_HUD_BLU: '#4040ff', // texto HUD azul
+  CLR_BONUS:   '#00e5ff', // caixa de bonus ciano
+  CLR_DK:      '#a04010', // Donkey Kong marrom
+  CLR_PAULINE: '#e080d0', // Pauline rosa
+  CLR_FIRE:    '#ff4400', // fogo laranja-vermelho
+  CLR_BG:      '#000000', // fundo preto
+};
+
+// ===== 2. DADOS DA FASE =====
+// Cada viga é um segmento { x1,y1, x2,y2 }.
+// A altura em qualquer x é calculada por interpolação linear (lerp).
+// As escadas têm { x, yTop, yBottom, broken } — broken = apenas decorativa.
+// Tudo em coordenadas lógicas 224x256 px.
+
+// Vigas (6 plataformas, do chão ao topo)
+// O HUD ocupa as primeiras ~20 px do topo, então a fase começa em y≈20
+// Plataforma 0 (chão) é quase reta; as intermediárias alternam a inclinação
+const BEAMS = [
+  // Plataforma 0 - chão (quase reta, leve inclinação para cima à direita)
+  { x1: 4,   y1: 238, x2: 220, y2: 234 },
+  // Plataforma 1 - inclina para a direita (desce da esq para dir)
+  { x1: 4,   y1: 200, x2: 180, y2: 208 },
+  // Plataforma 2 - inclina para a esquerda (desce da dir para esq)
+  { x1: 44,  y1: 176, x2: 220, y2: 168 },
+  // Plataforma 3 - inclina para a direita
+  { x1: 4,   y1: 152, x2: 180, y2: 160 },
+  // Plataforma 4 - inclina para a esquerda
+  { x1: 44,  y1: 128, x2: 220, y2: 120 },
+  // Plataforma 5 - topo (onde fica o DK e a Pauline)
+  { x1: 4,   y1: 96,  x2: 220, y2: 92  },
+];
+
+// Escadas que ligam as plataformas
+// x = posição horizontal central da escada
+// yTop/yBottom = y do topo/base da escada
+// broken = true → apenas decorativa (não dá pra subir)
+const LADDERS = [
+  // Escadas entre chão (P0) e P1
+  { x: 140, yTop: 200, yBottom: 238, broken: false },
+  { x: 40,  yTop: 200, yBottom: 238, broken: true  }, // decorativa
+  // Escadas entre P1 e P2
+  { x: 100, yTop: 168, yBottom: 208, broken: false },
+  { x: 170, yTop: 168, yBottom: 206, broken: true  }, // decorativa
+  // Escadas entre P2 e P3
+  { x: 60,  yTop: 152, yBottom: 176, broken: false },
+  { x: 180, yTop: 152, yBottom: 168, broken: true  }, // decorativa
+  // Escadas entre P3 e P4
+  { x: 110, yTop: 120, yBottom: 160, broken: false },
+  { x: 30,  yTop: 128, yBottom: 152, broken: true  }, // decorativa
+  // Escadas entre P4 e P5 (topo)
+  { x: 80,  yTop: 92,  yBottom: 128, broken: false },
+  { x: 190, yTop: 92,  yBottom: 120, broken: true  }, // decorativa
+];
+
+// Posições de spawn e outros pontos fixos
+const POSITIONS = {
+  MARIO_START:  { x: 18, y: 225 },   // onde o Mario nasce (no chão, perto do barril de óleo)
+  DK:           { x: 12, y: 68  },   // posição do Donkey Kong
+  PAULINE:      { x: 180, y: 72 },   // posição da Pauline (na plataforma do topo)
+  OIL_BARREL:   { x: 4,  y: 222 },   // barril de óleo no chão (extremidade esq)
+  HAMMER1:      { x: 30, y: 190 },   // martelo na plataforma 1
+  HAMMER2:      { x: 160, y: 115 },  // martelo na plataforma 4
+};
+
+// ===== 3. ENTRADA (INPUT) =====
+// Rastreia quais teclas estão pressionadas no momento
+const keys = {};
+document.addEventListener('keydown', e => {
+  keys[e.code] = true;
+  // Previne scroll da página com as setas
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code)) {
+    e.preventDefault();
+  }
+});
+document.addEventListener('keyup', e => { keys[e.code] = false; });
+
+// Helpers para verificar teclas (facilita a leitura do código)
+const input = {
+  left:   () => keys['ArrowLeft']  || keys['KeyA'],
+  right:  () => keys['ArrowRight'] || keys['KeyD'],
+  // up/down: usados para escadas
+  up:     () => keys['ArrowUp']    || keys['KeyW'],
+  down:   () => keys['ArrowDown']  || keys['KeyS'],
+  // jump: apenas Espaço — para não conflitar com a tecla de escada (↑)
+  jump:   () => keys['Space'],
+  enter:  () => keys['Enter'],
+};
+
+// ===== 4. FÍSICA E COLISÃO =====
+
+/**
+ * Retorna a altura (y) da viga em um dado x por interpolação linear.
+ * Se x estiver fora do segmento, retorna Infinity (sem chão).
+ */
+function beamHeightAt(beam, x) {
+  if (x < beam.x1 || x > beam.x2) return Infinity;
+  const t = (x - beam.x1) / (beam.x2 - beam.x1);
+  return beam.y1 + t * (beam.y2 - beam.y1);
+}
+
+/**
+ * Encontra a viga mais próxima abaixo do ponto (x, y).
+ * Retorna { beamIndex, height } ou null se não houver.
+ */
+function findBeamBelow(x, y) {
+  let best = null;
+  for (let i = 0; i < BEAMS.length; i++) {
+    const h = beamHeightAt(BEAMS[i], x);
+    if (h === Infinity) continue;
+    // A viga precisa estar abaixo ou no mesmo nível do ponto (com tolerância)
+    if (h >= y - 2 && (best === null || h < best.height)) {
+      best = { beamIndex: i, height: h };
+    }
+  }
+  return best;
+}
+
+/**
+ * Colisão AABB (Axis-Aligned Bounding Box).
+ * Retorna true se os dois retângulos se sobrepõem.
+ * Cada retângulo tem { x, y, w, h } onde (x,y) é o canto superior esquerdo.
+ */
+function rectOverlap(a, b) {
+  return a.x < b.x + b.w &&
+         a.x + a.w > b.x &&
+         a.y < b.y + b.h &&
+         a.y + a.h > b.y;
+}
+
+/**
+ * Verifica se o Mario está alinhado com uma escada (para poder escalar).
+ * Retorna o índice da escada se alinhado, ou -1.
+ */
+function findLadderAt(x, y, onlyAccessible = true) {
+  const MARGIN = 5; // tolerância horizontal
+  for (let i = 0; i < LADDERS.length; i++) {
+    const l = LADDERS[i];
+    if (onlyAccessible && l.broken) continue;
+    // Checa alinhamento horizontal
+    if (Math.abs(x - l.x) > MARGIN) continue;
+    // Checa se está dentro do range vertical da escada
+    if (y >= l.yTop - 4 && y <= l.yBottom + 4) return i;
+  }
+  return -1;
+}
+
+// ===== 5. ENTIDADES =====
+
+// --- PLAYER (Mario) ---
+const Player = {
+  x: 0, y: 0,
+  vx: 0, vy: 0,
+  w: CONST.MARIO_W,
+  h: CONST.MARIO_H,
+  // Estados possíveis: IDLE, WALKING, JUMPING, CLIMBING, DEAD
+  state: 'IDLE',
+  onGround: false,
+  currentBeam: -1,
+  facingRight: true,
+  deadTimer: 0,         // contador para a animação de morte
+  hasHammer: false,
+  hammerTimer: 0,
+  // Animação de caminhada (alterna frame a cada N updates)
+  walkFrame: 0,
+  walkTimer: 0,
+  climbFrame: 0,
+  climbTimer: 0,
+
+  reset() {
+    this.x = POSITIONS.MARIO_START.x;
+    this.y = POSITIONS.MARIO_START.y;
+    this.vx = 0; this.vy = 0;
+    this.state = 'IDLE';
+    this.onGround = true;
+    this.currentBeam = 0; // começa na viga 0 (chão)
+    this.facingRight = true;
+    this.deadTimer = 0;
+    this.hasHammer = false;
+    this.hammerTimer = 0;
+    this.walkFrame = 0;
+    this.walkTimer = 0;
+    this.climbFrame = 0;
+    this.climbTimer = 0;
+    this._jumpPressed = false;
+    this._climbLadder = -1;
+  },
+
+  update(dt) {
+    if (this.state === 'DEAD') {
+      this.deadTimer -= dt;
+      return; // sem movimento durante a morte
+    }
+
+    // Martelo tem duração limitada
+    if (this.hasHammer) {
+      this.hammerTimer -= dt;
+      if (this.hammerTimer <= 0) this.hasHammer = false;
+    }
+
+    if (this.state === 'CLIMBING') {
+      this._updateClimbing(dt);
+    } else {
+      this._updateWalking(dt);
+    }
+  },
+
+  _updateWalking(dt) {
+    // Movimento horizontal
+    this.vx = 0;
+    if (input.left())  { this.vx = -CONST.PLAYER_SPEED; this.facingRight = false; }
+    if (input.right()) { this.vx =  CONST.PLAYER_SPEED;  this.facingRight = true;  }
+
+    // Entrar na escada (↑ ou ↓ quando alinhado, SEM martelo)
+    // Verificamos ANTES do pulo para que ↑ priorize escada quando sobre ela
+    if (!this.hasHammer && this.onGround && (input.up() || input.down())) {
+      const li = findLadderAt(this.x + this.w / 2, this.y + this.h);
+      if (li !== -1) {
+        const lad = LADDERS[li];
+        const goingUp   = input.up()   && this.y + this.h > lad.yTop + 2;
+        const goingDown = input.down() && this.y < lad.yBottom - 2;
+        if (goingUp || goingDown) {
+          this.state = 'CLIMBING';
+          this._climbLadder = li;
+          this.x = lad.x - this.w / 2;  // centraliza na escada
+          this.vy = 0;
+          this._jumpPressed = true; // evita pulo imediato ao sair da escada
+          return;
+        }
+      }
+    }
+
+    // Pulo: Espaço (ou ↑ mas só se NÃO estiver em escada) e estiver no chão
+    if (input.jump() && this.onGround && !this.hasHammer) {
+      if (!this._jumpPressed) {
+        this.vy = CONST.JUMP_VY;
+        this.state = 'JUMPING';
+        this.onGround = false;
+        this._jumpPressed = true;
+      }
+    }
+    if (!input.jump()) this._jumpPressed = false;
+
+    // Gravidade
+    this.vy += CONST.GRAVITY;
+    this.x  += this.vx;
+    this.y  += this.vy;
+
+    // Snap para a viga (evita afundar ou flutuar)
+    this._snapToBeam();
+
+    // Limita às bordas horizontais da tela
+    this.x = Math.max(0, Math.min(CONST.W - this.w, this.x));
+
+    // Atualiza estado de animação
+    if (this.onGround) {
+      if (this.vx !== 0) {
+        this.state = 'WALKING';
+        this.walkTimer++;
+        if (this.walkTimer > 8) { this.walkFrame ^= 1; this.walkTimer = 0; }
+      } else {
+        this.state = 'IDLE';
+      }
+    }
+  },
+
+  _updateClimbing(dt) {
+    const lad = LADDERS[this._climbLadder];
+    this.vx = 0;
+
+    if (input.up())   this.vy = -1.2;
+    else if (input.down()) this.vy = 1.2;
+    else this.vy = 0;
+
+    // Animação de escalar
+    if (this.vy !== 0) {
+      this.climbTimer++;
+      if (this.climbTimer > 8) { this.climbFrame ^= 1; this.climbTimer = 0; }
+    }
+
+    this.y += this.vy;
+    this.x = lad.x - this.w / 2; // mantém centralizado na escada
+
+    // Chegou ao topo da escada → volta a andar na viga de cima
+    if (this.y + this.h / 2 <= lad.yTop) {
+      this.y = lad.yTop - this.h;
+      this.state = 'IDLE';
+      this.vy = 0;
+      this._snapToBeam();
+      return;
+    }
+    // Chegou à base da escada → volta a andar na viga de baixo
+    if (this.y + this.h / 2 >= lad.yBottom) {
+      this.y = lad.yBottom - this.h;
+      this.state = 'IDLE';
+      this.vy = 0;
+      this._snapToBeam();
+      return;
+    }
+  },
+
+  _snapToBeam() {
+    // Só aplica snap quando o Mario está caindo ou parado (vy >= 0)
+    // Quando está subindo (vy < 0), deixa o pulo acontecer livremente
+    if (this.vy < 0) {
+      this.onGround = false;
+      return;
+    }
+
+    const cx   = this.x + this.w / 2;
+    const feet = this.y + this.h;
+
+    // Percorre todas as vigas e encontra a mais próxima abaixo dos pés
+    let bestBeam = -1;
+    let bestH    = Infinity;
+    for (let i = 0; i < BEAMS.length; i++) {
+      const h = beamHeightAt(BEAMS[i], cx);
+      if (h === Infinity) continue;
+      // A viga deve estar abaixo dos pés (ou muito perto — tolerância de 3px)
+      if (feet <= h + Math.abs(this.vy) + 3 && h < bestH) {
+        bestH    = h;
+        bestBeam = i;
+      }
+    }
+
+    if (bestBeam !== -1 && feet >= bestH - 1) {
+      // Aterrissou (ou está andando sobre a viga)
+      this.y = bestH - this.h;
+      this.vy = 0;
+      this.onGround = true;
+      this.currentBeam = bestBeam;
+    } else if (bestBeam !== -1 && this.currentBeam === bestBeam) {
+      // Continua na mesma viga inclinada — segue o slope
+      this.y = bestH - this.h;
+      this.vy = 0;
+      this.onGround = true;
+    } else {
+      // No ar
+      this.onGround = false;
+    }
+  },
+
+  die() {
+    if (this.state === 'DEAD') return;
+    this.state = 'DEAD';
+    this.deadTimer = CONST.DEATH_ANIM_TIME;
+    this.vx = 0; this.vy = 0;
+  },
+
+  // Retorna hitbox para colisão
+  hitbox() {
+    return { x: this.x + 1, y: this.y, w: this.w - 2, h: this.h };
+  },
+
+  draw(ctx) {
+    if (this.state === 'DEAD') {
+      // Animação de morte: pisca e gira (simplificado — pisca)
+      if (Math.floor(this.deadTimer * 10) % 2 === 0) return;
+    }
+
+    const px = Math.round(this.x);
+    const py = Math.round(this.y);
+    const f  = this.facingRight ? 1 : -1;
+    const cx = px + this.w / 2;
+
+    ctx.save();
+    ctx.translate(cx, py);
+    ctx.scale(f, 1); // espelha se olhando para a esquerda
+
+    if (this.state === 'CLIMBING') {
+      _drawMarioClimbing(ctx, this.climbFrame);
+    } else if (this.hasHammer) {
+      _drawMarioHammer(ctx, this.walkFrame);
+    } else {
+      _drawMario(ctx, this.state, this.walkFrame);
+    }
+
+    ctx.restore();
+  }
+};
+
+// Sprites do Mario desenhados com retângulos (pixel art simples)
+function _drawMario(ctx, state, frame) {
+  // Corpo (vermelho)
+  ctx.fillStyle = CONST.CLR_MARIO;
+  ctx.fillRect(-5, 5, 10, 6);  // torso
+  // Pernas (azul — macacão)
+  ctx.fillStyle = '#2040c0';
+  if (state === 'WALKING' && frame === 1) {
+    // Frame 1: pernas abertas
+    ctx.fillRect(-5, 11, 4, 3);
+    ctx.fillRect(1,  11, 4, 3);
+  } else if (state === 'JUMPING') {
+    // Pernas para cima
+    ctx.fillRect(-4, 10, 8, 2);
+    ctx.fillRect(-5, 12, 3, 2);
+    ctx.fillRect(2,  12, 3, 2);
+  } else {
+    // IDLE
+    ctx.fillRect(-4, 11, 8, 3);
+  }
+  // Cabeça (cor da pele)
+  ctx.fillStyle = '#f0a060';
+  ctx.fillRect(-4, 0, 8, 5);
+  // Boné (vermelho)
+  ctx.fillStyle = CONST.CLR_MARIO;
+  ctx.fillRect(-5, -1, 10, 3);
+  // Olho
+  ctx.fillStyle = '#000';
+  ctx.fillRect(1, 1, 2, 2);
+  // Bigode
+  ctx.fillStyle = '#3a1a00';
+  ctx.fillRect(-3, 3, 7, 1);
+  // Braços
+  ctx.fillStyle = '#f0a060';
+  ctx.fillRect(-6, 6, 2, 3);
+  ctx.fillRect(4,  6, 2, 3);
+}
+
+function _drawMarioClimbing(ctx, frame) {
+  // Macacão azul
+  ctx.fillStyle = '#2040c0';
+  ctx.fillRect(-5, 5, 10, 8);
+  // Cabeça
+  ctx.fillStyle = '#f0a060';
+  ctx.fillRect(-3, 0, 7, 5);
+  // Boné
+  ctx.fillStyle = CONST.CLR_MARIO;
+  ctx.fillRect(-4, -1, 9, 3);
+  // Braços alternados (animação de subir)
+  ctx.fillStyle = '#f0a060';
+  if (frame === 0) {
+    ctx.fillRect(-7, 3, 2, 3);
+    ctx.fillRect(4, 6, 2, 3);
+  } else {
+    ctx.fillRect(-7, 6, 2, 3);
+    ctx.fillRect(4, 3, 2, 3);
+  }
+}
+
+function _drawMarioHammer(ctx, frame) {
+  _drawMario(ctx, 'WALKING', frame);
+  // Martelo acima da cabeça
+  ctx.fillStyle = '#c06010';
+  ctx.fillRect(-2, -8, 4, 6);
+  ctx.fillStyle = '#80400a';
+  ctx.fillRect(-4, -10, 8, 4);
+}
+
+// --- BARRIS ---
+// Gerenciados como array pelo sistema de spawner
+function createBarrel(x, y, beamIndex) {
+  return {
+    x, y,
+    vx: CONST.BARREL_SPEED,  // começa indo para a direita
+    vy: 0,
+    w: CONST.BARREL_W,
+    h: CONST.BARREL_H,
+    beamIndex,      // viga atual
+    state: 'ROLLING', // ROLLING, FALLING, DEAD
+    rollFrame: 0,
+    rollTimer: 0,
+
+    hitbox() {
+      return { x: this.x + 1, y: this.y + 1, w: this.w - 2, h: this.h - 2 };
+    },
+
+    update() {
+      if (this.state === 'DEAD') return;
+
+      if (this.state === 'FALLING') {
+        this._updateFalling();
+      } else {
+        this._updateRolling();
+      }
+
+      // Animação de rolagem
+      this.rollTimer++;
+      if (this.rollTimer > 6) { this.rollFrame = (this.rollFrame + 1) % 4; this.rollTimer = 0; }
+    },
+
+    _updateRolling() {
+      const beam = BEAMS[this.beamIndex];
+      // Move horizontalmente (segue a inclinação da viga)
+      this.x += this.vx;
+
+      // Snap vertical à viga
+      const cx = this.x + this.w / 2;
+      const h = beamHeightAt(beam, cx);
+      if (h !== Infinity) {
+        this.y = h - this.h;
+      }
+
+      // Chegou na ponta direita da viga?
+      if (this.x + this.w > beam.x2 + 2) {
+        // Verifica chance de descer por escada
+        if (this._tryLadderDescent()) return;
+        // Cai para a próxima viga
+        this._startFall(beam.x2);
+      }
+      // Chegou na ponta esquerda?
+      else if (this.x < beam.x1 - 2) {
+        if (this._tryLadderDescent()) return;
+        this._startFall(beam.x1);
+      }
+    },
+
+    _tryLadderDescent() {
+      // Verifica se há uma escada não-quebrada próxima da posição atual
+      const cx = this.x + this.w / 2;
+      for (let i = 0; i < LADDERS.length; i++) {
+        const l = LADDERS[i];
+        if (l.broken) continue;
+        if (Math.abs(cx - l.x) > 12) continue;
+        // A escada precisa ligar a viga atual a uma de baixo
+        const beamBottom = beamHeightAt(BEAMS[this.beamIndex], l.x);
+        if (Math.abs(beamBottom - l.yBottom) > 10) continue;
+        // Chance aleatória de descer pela escada
+        if (Math.random() < CONST.BARREL_LADDER_CHANCE) {
+          this.x = l.x - this.w / 2;
+          this.state = 'FALLING';
+          this.vy = CONST.BARREL_FALL_SPEED;
+          this._targetBeam = this.beamIndex - 1;
+          this._ladderDescent = true;
+          return true;
+        }
+      }
+      return false;
+    },
+
+    _startFall(edgeX) {
+      this.x = edgeX - this.w / 2;
+      this.state = 'FALLING';
+      this.vy = CONST.BARREL_FALL_SPEED;
+      this._ladderDescent = false;
+      // Procura a próxima viga abaixo
+      this._targetBeam = this.beamIndex - 1;
+    },
+
+    _updateFalling() {
+      this.y += this.vy;
+
+      // Procura a viga de destino
+      if (this._targetBeam < 0) {
+        // Chegou ao barril de óleo — destrói
+        if (this.y > CONST.H) this.state = 'DEAD';
+        return;
+      }
+
+      const targetBeam = BEAMS[this._targetBeam];
+      if (!targetBeam) { this.state = 'DEAD'; return; }
+
+      const cx = this.x + this.w / 2;
+      const h = beamHeightAt(targetBeam, cx);
+
+      // Pousou na viga de destino
+      if (h !== Infinity && this.y + this.h >= h) {
+        this.y = h - this.h;
+        this.vy = 0;
+        this.beamIndex = this._targetBeam;
+        this.state = 'ROLLING';
+        // Inverte a direção dependendo da inclinação da nova viga
+        const slope = targetBeam.y2 - targetBeam.y1;
+        this.vx = slope > 0 ? CONST.BARREL_SPEED : -CONST.BARREL_SPEED;
+      }
+    },
+
+    draw(ctx) {
+      if (this.state === 'DEAD') return;
+      const px = Math.round(this.x);
+      const py = Math.round(this.y);
+      const r  = this.rollFrame; // frame de rotação (0-3)
+
+      // Corpo do barril
+      ctx.fillStyle = CONST.CLR_BARREL;
+      ctx.fillRect(px, py + 2, this.w, this.h - 4);
+      ctx.fillRect(px + 2, py, this.w - 4, this.h);
+
+      // Aros do barril (escuro)
+      ctx.fillStyle = '#803010';
+      ctx.fillRect(px + 1, py + 2, this.w - 2, 1);
+      ctx.fillRect(px + 1, py + this.h - 3, this.w - 2, 1);
+      ctx.fillRect(px + 1, py + 5, this.w - 2, 1);
+
+      // Símbolo de rotação (X rotacionando)
+      ctx.fillStyle = '#fff6';
+      const cx = px + 5, cy = py + 5;
+      if (r === 0 || r === 2) {
+        ctx.fillRect(cx - 3, cy - 1, 6, 2);
+      } else {
+        ctx.fillRect(cx - 1, cy - 3, 2, 6);
+      }
+    }
+  };
+}
+
+// --- DONKEY KONG ---
+const DonkeyKong = {
+  x: POSITIONS.DK.x,
+  y: POSITIONS.DK.y,
+  w: CONST.DK_W,
+  h: CONST.DK_H,
+  animFrame: 0,
+  animTimer: 0,
+  throwAnim: 0,   // frames durante o arremesso
+
+  update(dt) {
+    this.animTimer++;
+    if (this.animTimer > 15) { this.animFrame ^= 1; this.animTimer = 0; }
+    if (this.throwAnim > 0) this.throwAnim--;
+  },
+
+  triggerThrow() { this.throwAnim = 30; },
+
+  draw(ctx) {
+    const px = Math.round(this.x);
+    const py = Math.round(this.y);
+    const throwing = this.throwAnim > 0;
+    const f = this.animFrame;
+
+    // Corpo (marrom)
+    ctx.fillStyle = CONST.CLR_DK;
+    ctx.fillRect(px + 4, py + 12, 24, 20);
+
+    // Cabeça
+    ctx.fillRect(px + 6, py + 2, 20, 14);
+
+    // Olhos (brancos)
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(px + 8, py + 6, 4, 4);
+    ctx.fillRect(px + 18, py + 6, 4, 4);
+    // Pupilas
+    ctx.fillStyle = '#000';
+    ctx.fillRect(px + 9, py + 7, 2, 2);
+    ctx.fillRect(px + 19, py + 7, 2, 2);
+
+    // Nariz
+    ctx.fillStyle = '#703008';
+    ctx.fillRect(px + 12, py + 10, 8, 4);
+
+    // Barriga (mais clara)
+    ctx.fillStyle = '#c06020';
+    ctx.fillRect(px + 7, py + 16, 18, 12);
+
+    // Braços (animação básica: sobe/desce)
+    ctx.fillStyle = CONST.CLR_DK;
+    if (throwing) {
+      // Braço direito levantado no arremesso
+      ctx.fillRect(px + 28, py + 8, 6, 10);
+      ctx.fillRect(px,      py + 14, 6, 10);
+    } else {
+      const oy = f === 0 ? 0 : 2;
+      ctx.fillRect(px + 28, py + 14 + oy, 6, 10);
+      ctx.fillRect(px,      py + 14 - oy, 6, 10);
+    }
+
+    // Pilha de barris atrás do DK
+    ctx.fillStyle = CONST.CLR_BARREL;
+    for (let i = 0; i < 3; i++) {
+      ctx.fillRect(px - 14, py + 8 + i * 8, 12, 7);
+      ctx.fillStyle = '#803010';
+      ctx.fillRect(px - 14, py + 9 + i * 8, 12, 1);
+      ctx.fillStyle = CONST.CLR_BARREL;
+    }
+  }
+};
+
+// --- PAULINE ---
+const Pauline = {
+  x: POSITIONS.PAULINE.x,
+  y: POSITIONS.PAULINE.y,
+  w: CONST.PAULINE_W,
+  h: CONST.PAULINE_H,
+  animFrame: 0,
+  animTimer: 0,
+
+  update(dt) {
+    this.animTimer++;
+    if (this.animTimer > 30) { this.animFrame ^= 1; this.animTimer = 0; }
+  },
+
+  hitbox() {
+    return { x: this.x, y: this.y, w: this.w, h: this.h };
+  },
+
+  draw(ctx) {
+    const px = Math.round(this.x);
+    const py = Math.round(this.y);
+    const f = this.animFrame;
+
+    // Vestido (rosa)
+    ctx.fillStyle = CONST.CLR_PAULINE;
+    ctx.fillRect(px + 2, py + 10, 8, 10);
+    // Braços levantados (pedindo socorro)
+    ctx.fillRect(px - 1, py + 8 + (f === 0 ? 0 : -2), 4, 6);
+    ctx.fillRect(px + 9, py + 8 + (f === 0 ? -2 : 0), 4, 6);
+    // Corpo
+    ctx.fillStyle = '#e0a080';
+    ctx.fillRect(px + 3, py + 6, 6, 6);
+    // Cabeça
+    ctx.fillRect(px + 2, py + 1, 8, 7);
+    // Cabelo (marrom)
+    ctx.fillStyle = '#703010';
+    ctx.fillRect(px + 1, py, 10, 4);
+    ctx.fillRect(px + 1, py + 4, 2, 4);
+  }
+};
+
+// --- MARTELO ---
+function createHammer(x, y) {
+  return {
+    x, y,
+    w: CONST.HAMMER_W,
+    h: CONST.HAMMER_H,
+    active: true,
+
+    hitbox() {
+      return { x: this.x, y: this.y, w: this.w, h: this.h };
+    },
+
+    draw(ctx) {
+      if (!this.active) return;
+      const px = Math.round(this.x);
+      const py = Math.round(this.y);
+      // Cabo
+      ctx.fillStyle = '#c06010';
+      ctx.fillRect(px + 3, py + 4, 2, 6);
+      // Cabeça do martelo
+      ctx.fillStyle = '#808080';
+      ctx.fillRect(px, py, 8, 4);
+      // Brilho
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(px + 1, py + 1, 2, 1);
+    }
+  };
+}
+
+// --- BARRIL DE ÓLEO (decorativo + interativo) ---
+const OilBarrel = {
+  x: POSITIONS.OIL_BARREL.x,
+  y: POSITIONS.OIL_BARREL.y,
+  w: 14,
+  h: 16,
+  fireFrame: 0,
+  fireTimer: 0,
+
+  update() {
+    this.fireTimer++;
+    if (this.fireTimer > 8) { this.fireFrame = (this.fireFrame + 1) % 3; this.fireTimer = 0; }
+  },
+
+  draw(ctx) {
+    const px = this.x, py = this.y;
+    // Barril azul (cor arcade)
+    ctx.fillStyle = '#2040c0';
+    ctx.fillRect(px, py, this.w, this.h);
+    ctx.fillStyle = '#4060e0';
+    ctx.fillRect(px + 1, py + 1, this.w - 2, 4);
+    // Aros
+    ctx.fillStyle = '#0020a0';
+    ctx.fillRect(px, py + 6, this.w, 2);
+    ctx.fillRect(px, py + 12, this.w, 2);
+    // Chamas
+    const flames = [
+      { ox: 1, oy: -8 }, { ox: 4, oy: -10 }, { ox: 8, oy: -7 }
+    ];
+    flames.forEach((fl, i) => {
+      const off = ((this.fireFrame + i) % 3);
+      ctx.fillStyle = off === 0 ? '#ff4400' : off === 1 ? '#ffaa00' : '#ff6600';
+      ctx.fillRect(px + fl.ox, py + fl.oy - off, 3, 5 + off);
+    });
+    // Gotejamento (barril de óleo)
+    ctx.fillStyle = '#000088';
+    ctx.fillRect(px + 3, py + this.h, 2, 4);
+    ctx.fillRect(px + 8, py + this.h, 2, 3);
+  }
+};
+
+// ===== 6. SISTEMAS =====
+
+// --- SPAWNER DE BARRIS ---
+const BarrelSpawner = {
+  timer: 0,
+  nextSpawn: 2.5, // primeiro barril aparece em 2.5s
+
+  reset() {
+    this.timer = 0;
+    this.nextSpawn = 2.5;
+    game.barrels = [];
+  },
+
+  update(dt) {
+    this.timer += dt;
+    if (this.timer >= this.nextSpawn) {
+      this.timer = 0;
+      this.nextSpawn = CONST.BARREL_SPAWN_MIN +
+        Math.random() * (CONST.BARREL_SPAWN_MAX - CONST.BARREL_SPAWN_MIN);
+      this._spawnBarrel();
+      DonkeyKong.triggerThrow();
+    }
+    // Remove barris mortos
+    game.barrels = game.barrels.filter(b => b.state !== 'DEAD');
+  },
+
+  _spawnBarrel() {
+    // Barril nasce na posição do DK, na viga do topo (índice 5)
+    const topBeam = BEAMS[5];
+    const spawnX = topBeam.x1 + 10;
+    const spawnY = topBeam.y1 - CONST.BARREL_H;
+    const b = createBarrel(spawnX, spawnY, 5);
+    // Começa rolando para a direita (segue a inclinação)
+    b.vx = CONST.BARREL_SPEED;
+    game.barrels.push(b);
+  }
+};
+
+// --- SISTEMA DE PONTUAÇÃO E BONUS ---
+const ScoreSystem = {
+  score: 0,
+  highScore: parseInt(localStorage.getItem('dk_highscore') || '0'),
+  bonus: CONST.BONUS_START,
+  bonusTimer: 0,
+  level: 1,
+
+  reset() {
+    this.score = 0;
+    this.bonus = CONST.BONUS_START;
+    this.bonusTimer = 0;
+  },
+
+  add(points) {
+    this.score += points;
+    if (this.score > this.highScore) {
+      this.highScore = this.score;
+      localStorage.setItem('dk_highscore', this.highScore);
+    }
+  },
+
+  update(dt) {
+    // Decremente o bonus ao longo do tempo
+    this.bonusTimer += dt;
+    if (this.bonusTimer >= CONST.BONUS_INTERVAL) {
+      this.bonusTimer = 0;
+      this.bonus = Math.max(0, this.bonus - CONST.BONUS_TICK);
+      // Se o bonus zerar, o Mario perde uma vida
+      if (this.bonus === 0 && game.state === 'PLAYING') {
+        game.lives--;
+        if (game.lives <= 0) {
+          game.state = 'GAME_OVER';
+        } else {
+          // Reseta o bonus e reposiciona o Mario
+          this.bonus = CONST.BONUS_START;
+          Player.reset();
+          BarrelSpawner.reset();
+        }
+      }
+    }
+  }
+};
+
+// Detecta se o Mario pulou por cima de um barril (para dar pontuação)
+function checkJumpOverBarrel() {
+  if (Player.state !== 'JUMPING' || Player.vy >= 0) return; // só na subida do pulo
+  // Não precisa — vamos checar quando o Mario passa pelo barril verticalmente
+  // (vy < 0 = subindo, se o centro do Mario passou por cima do barril)
+}
+
+// ===== 7. RENDERIZAÇÃO E HUD =====
+
+/**
+ * Desenha o fundo e as decorações da fase
+ */
+function drawBackground(ctx) {
+  ctx.fillStyle = CONST.CLR_BG;
+  ctx.fillRect(0, 0, CONST.W, CONST.H);
+}
+
+/**
+ * Desenha todas as vigas (plataformas inclinadas)
+ * Cada viga é renderizada como uma faixa de "treliça" pixel art
+ */
+function drawBeams(ctx) {
+  BEAMS.forEach(beam => {
+    const { x1, y1, x2, y2 } = beam;
+    const thickness = 5; // altura visual da viga
+
+    // Desenha a viga como trapézio inclinado
+    ctx.fillStyle = CONST.CLR_BEAM;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.lineTo(x2, y2 + thickness);
+    ctx.lineTo(x1, y1 + thickness);
+    ctx.closePath();
+    ctx.fill();
+
+    // Detalhes da treliça (padrão diagonal — estilo arcade)
+    ctx.fillStyle = '#ff4488'; // rosa mais claro para as diagonais
+    const len = x2 - x1;
+    const steps = Math.floor(len / 8);
+    for (let i = 0; i < steps; i++) {
+      const t1 = i / steps;
+      const t2 = (i + 1) / steps;
+      const lx1 = x1 + t1 * len;
+      const ly1 = y1 + t1 * (y2 - y1);
+      const lx2 = x1 + t2 * len;
+      const ly2 = y1 + t2 * (y2 - y1);
+      // Linha inclinada alternada (treliça)
+      if (i % 2 === 0) {
+        ctx.fillRect(lx1, ly1 + 1, 1, 3);
+        ctx.fillRect(lx2, ly2 + 1, 1, 3);
+        // Diagonal
+        for (let d = 0; d <= 1; d += 0.25) {
+          const dx = lx1 + d * (lx2 - lx1);
+          const dy = ly1 + d * (ly2 - ly1) + 2;
+          ctx.fillRect(Math.round(dx), Math.round(dy), 1, 1);
+        }
+      }
+    }
+
+    // Borda superior brilhante
+    ctx.fillStyle = '#ff88bb';
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.lineTo(x2, y2 + 1);
+    ctx.lineTo(x1, y1 + 1);
+    ctx.closePath();
+    ctx.fill();
+  });
+}
+
+/**
+ * Desenha todas as escadas
+ */
+function drawLadders(ctx) {
+  LADDERS.forEach(lad => {
+    const { x, yTop, yBottom, broken } = lad;
+    const w = 8; // largura da escada
+
+    // Trilhos laterais
+    ctx.fillStyle = broken ? '#007788' : CONST.CLR_LADDER; // quebradas são mais escuras
+    ctx.fillRect(x - w/2, yTop, 2, yBottom - yTop);
+    ctx.fillRect(x + w/2 - 2, yTop, 2, yBottom - yTop);
+
+    // Degraus
+    const stepSpacing = 4;
+    const steps = Math.floor((yBottom - yTop) / stepSpacing);
+    for (let i = 0; i <= steps; i++) {
+      const sy = yTop + i * stepSpacing;
+      // Escada quebrada: falta alguns degraus no meio
+      if (broken && i > steps * 0.3 && i < steps * 0.7) continue;
+      ctx.fillRect(x - w/2 + 2, sy, w - 4, 1);
+    }
+  });
+}
+
+/**
+ * Desenha o HUD (pontuação, vidas, nível, bonus)
+ */
+function drawHUD(ctx) {
+  ctx.font = '6px monospace'; // fonte pequena pixel-like
+
+  // Linha 1: HIGH SCORE
+  ctx.fillStyle = CONST.CLR_MARIO;
+  ctx.fillText('HIGH SCORE', 72, 8);
+
+  // Pontuações
+  ctx.fillStyle = CONST.CLR_HUD;
+  ctx.fillText(String(ScoreSystem.score).padStart(6, '0'), 2, 16);
+  ctx.fillText(String(ScoreSystem.highScore).padStart(6, '0'), 82, 16);
+
+  // Nível
+  ctx.fillStyle = CONST.CLR_HUD_BLU;
+  ctx.fillText(`L=${String(ScoreSystem.level).padStart(2, '0')}`, 175, 16);
+
+  // Ícones de vidas (mini-Marios)
+  ctx.fillStyle = CONST.CLR_MARIO;
+  for (let i = 0; i < game.lives; i++) {
+    const lx = 2 + i * 12;
+    const ly = 22;
+    // Mini sprite do Mario (3x4 px)
+    ctx.fillRect(lx + 1, ly,     4, 2); // boné
+    ctx.fillRect(lx,     ly + 2, 6, 2); // corpo
+    ctx.fillRect(lx,     ly + 4, 2, 2); // perna esq
+    ctx.fillRect(lx + 4, ly + 4, 2, 2); // perna dir
+  }
+
+  // Caixa de BONUS (estilo arcade — borda ciano)
+  const bx = 160, by = 20;
+  ctx.strokeStyle = CONST.CLR_BONUS;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(bx + 0.5, by + 0.5, 60, 14);
+  ctx.fillStyle = CONST.CLR_BONUS;
+  ctx.fillText('BONUS', bx + 12, by + 7);
+  ctx.fillStyle = CONST.CLR_HUD;
+  ctx.fillText(String(ScoreSystem.bonus).padStart(5, ' '), bx + 8, by + 13);
+
+  // Separador entre HUD e fase
+  ctx.fillStyle = '#333';
+  ctx.fillRect(0, 30, CONST.W, 1);
+}
+
+/**
+ * Tela de MENU inicial
+ */
+function drawMenuScreen(ctx) {
+  ctx.fillStyle = CONST.CLR_BG;
+  ctx.fillRect(0, 0, CONST.W, CONST.H);
+
+  ctx.font = '10px monospace';
+  ctx.fillStyle = CONST.CLR_MARIO;
+  ctx.fillText('DONKEY KONG', 62, 60);
+
+  ctx.font = '6px monospace';
+  ctx.fillStyle = CONST.CLR_HUD;
+  ctx.fillText('PRESSIONE  ENTER', 60, 100);
+  ctx.fillText('PARA INICIAR', 68, 112);
+
+  ctx.fillStyle = CONST.CLR_BONUS;
+  ctx.fillText('CONTROLES:', 70, 140);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('SETAS / A-D : MOVER',  50, 152);
+  ctx.fillText('ESPACO      : PULAR',  50, 162);
+  ctx.fillText('CIMA / BAIXO: ESCADA', 50, 172);
+
+  ctx.fillStyle = CONST.CLR_HUD_BLU;
+  ctx.fillText(`HIGH SCORE: ${String(ScoreSystem.highScore).padStart(6, '0')}`, 58, 200);
+
+  // Mini DK decorativo
+  ctx.fillStyle = CONST.CLR_DK;
+  ctx.fillRect(96, 220, 32, 24);
+  ctx.fillRect(100, 214, 24, 12);
+}
+
+/**
+ * Tela de GAME OVER
+ */
+function drawGameOverScreen(ctx) {
+  ctx.fillStyle = '#00000088';
+  ctx.fillRect(0, 0, CONST.W, CONST.H);
+
+  ctx.font = '10px monospace';
+  ctx.fillStyle = CONST.CLR_MARIO;
+  ctx.fillText('GAME  OVER', 68, 110);
+
+  ctx.font = '6px monospace';
+  ctx.fillStyle = CONST.CLR_HUD;
+  ctx.fillText(`SCORE: ${String(ScoreSystem.score).padStart(6, '0')}`, 78, 130);
+
+  ctx.fillStyle = CONST.CLR_BONUS;
+  ctx.fillText('ENTER PARA REINICIAR', 44, 160);
+}
+
+/**
+ * Tela de VITÓRIA
+ */
+function drawWinScreen(ctx) {
+  ctx.fillStyle = '#00000088';
+  ctx.fillRect(0, 0, CONST.W, CONST.H);
+
+  ctx.font = '10px monospace';
+  ctx.fillStyle = '#ffff00';
+  ctx.fillText('YOU WIN!', 78, 100);
+
+  ctx.font = '6px monospace';
+  ctx.fillStyle = CONST.CLR_HUD;
+  ctx.fillText(`BONUS: +${ScoreSystem.bonus}`, 78, 120);
+  ctx.fillText(`SCORE: ${String(ScoreSystem.score).padStart(6, '0')}`, 78, 132);
+
+  if (ScoreSystem.score >= ScoreSystem.highScore) {
+    ctx.fillStyle = '#ffff00';
+    ctx.fillText('** NOVO RECORDE! **', 52, 148);
+  }
+
+  ctx.fillStyle = CONST.CLR_BONUS;
+  ctx.fillText('ENTER PARA REINICIAR', 44, 180);
+}
+
+// ===== 8. ESTADOS E GAME LOOP =====
+
+// Estado global do jogo
+const game = {
+  state: 'MENU',  // MENU | PLAYING | GAME_OVER | WIN
+  lives: CONST.INITIAL_LIVES,
+  barrels: [],
+  hammers: [],
+  // Para detectar pulo sobre barril (evita pontuação duplicada)
+  _jumpedBarrels: new Set(),
+  // Para controlar o Enter (evitar ativação dupla)
+  _enterPressed: false,
+};
+
+/**
+ * Inicializa/reinicia o jogo do zero
+ */
+function startGame() {
+  game.state = 'PLAYING';
+  game.lives = CONST.INITIAL_LIVES;
+  game.barrels = [];
+  // Cria os martelos (itens coletáveis)
+  game.hammers = [
+    createHammer(POSITIONS.HAMMER1.x, POSITIONS.HAMMER1.y),
+    createHammer(POSITIONS.HAMMER2.x, POSITIONS.HAMMER2.y),
+  ];
+  game._jumpedBarrels = new Set();
+  ScoreSystem.reset();
+  BarrelSpawner.reset();
+  Player.reset();
+}
+
+/**
+ * Atualiza toda a lógica do jogo (chamado a cada frame fixo)
+ * dt = delta time em segundos (fixo em 1/60)
+ */
+function update(dt) {
+  if (game.state === 'MENU') {
+    if (input.enter() && !game._enterPressed) {
+      game._enterPressed = true;
+      startGame();
+    }
+    if (!input.enter()) game._enterPressed = false;
+    return;
+  }
+
+  if (game.state === 'GAME_OVER' || game.state === 'WIN') {
+    if (input.enter() && !game._enterPressed) {
+      game._enterPressed = true;
+      game.state = 'MENU';
+    }
+    if (!input.enter()) game._enterPressed = false;
+    return;
+  }
+
+  // ---- PLAYING ----
+
+  // Atualiza entidades decorativas
+  OilBarrel.update();
+  DonkeyKong.update(dt);
+  Pauline.update(dt);
+
+  // Atualiza spawner de barris
+  BarrelSpawner.update(dt);
+
+  // Atualiza barris
+  game.barrels.forEach(b => b.update(dt));
+
+  // Atualiza sistemas
+  ScoreSystem.update(dt);
+
+  // Atualiza o jogador
+  if (Player.state === 'DEAD') {
+    Player.update(dt);
+    // Animação de morte terminou
+    if (Player.deadTimer <= 0) {
+      game.lives--;
+      if (game.lives <= 0) {
+        game.state = 'GAME_OVER';
+      } else {
+        Player.reset();
+        BarrelSpawner.reset();
+        ScoreSystem.bonus = CONST.BONUS_START;
+        ScoreSystem.bonusTimer = 0;
+      }
+    }
+    return; // não processa mais nada durante a morte
+  }
+  Player.update(dt);
+
+  // --- COLISÃO: Mario com Barris ---
+  game.barrels.forEach(b => {
+    if (b.state === 'DEAD') return;
+
+    // Pontuação por pular sobre um barril
+    // (Mario está subindo e passou por cima do barril horizontalmente)
+    if (Player.state === 'JUMPING' && Player.vy < 0) {
+      const pid = game.barrels.indexOf(b);
+      if (!game._jumpedBarrels.has(pid)) {
+        const ph = Player.hitbox();
+        // Se o Mario está acima do barril e alinhado horizontalmente
+        if (ph.x < b.x + b.w && ph.x + ph.w > b.x && ph.y < b.y) {
+          game._jumpedBarrels.add(pid);
+          ScoreSystem.add(CONST.SCORE_JUMP_BARREL);
+          // Efeito visual (pontuação flutuante seria implementada aqui)
+        }
+      }
+    }
+
+    // Colisão fatal: Mario toca no barril
+    if (rectOverlap(Player.hitbox(), b.hitbox())) {
+      if (Player.hasHammer) {
+        // Com martelo, destrói o barril
+        b.state = 'DEAD';
+        ScoreSystem.add(CONST.SCORE_HAMMER_BARREL);
+      } else {
+        Player.die();
+      }
+    }
+  });
+
+  // --- COLISÃO: Mario com Martelos ---
+  game.hammers.forEach(h => {
+    if (!h.active) return;
+    if (rectOverlap(Player.hitbox(), h.hitbox())) {
+      h.active = false;
+      Player.hasHammer = true;
+      Player.hammerTimer = CONST.HAMMER_DURATION;
+    }
+  });
+
+  // --- COLISÃO: Mario com Pauline (vitória!) ---
+  if (rectOverlap(Player.hitbox(), Pauline.hitbox())) {
+    ScoreSystem.add(ScoreSystem.bonus); // soma o bonus restante
+    game.state = 'WIN';
+  }
+
+  // Limpa o conjunto de barris pulados quando Mario não está mais pulando
+  if (Player.state !== 'JUMPING') {
+    game._jumpedBarrels.clear();
+  }
+
+  // Limita barris em tela (performance — máximo de 6)
+  if (game.barrels.length > 6) {
+    game.barrels.splice(0, game.barrels.length - 6);
+  }
+}
+
+/**
+ * Renderiza tudo (chamado a cada frame)
+ */
+function render(ctx) {
+  drawBackground(ctx);
+
+  if (game.state === 'MENU') {
+    drawMenuScreen(ctx);
+    return;
+  }
+
+  // Desenha a fase
+  drawBeams(ctx);
+  drawLadders(ctx);
+
+  // Barril de óleo
+  OilBarrel.draw(ctx);
+
+  // Martelos
+  game.hammers.forEach(h => h.draw(ctx));
+
+  // Entidades
+  DonkeyKong.draw(ctx);
+  Pauline.draw(ctx);
+  game.barrels.forEach(b => b.draw(ctx));
+  Player.draw(ctx);
+
+  // HUD por cima de tudo
+  drawHUD(ctx);
+
+  // Telas de overlay
+  if (game.state === 'GAME_OVER') drawGameOverScreen(ctx);
+  if (game.state === 'WIN')       drawWinScreen(ctx);
+}
+
+// --- GAME LOOP com Fixed Timestep ---
+// Usamos 60 Hz fixo independente do monitor para garantir física consistente
+const FIXED_DT   = 1 / 60;   // delta time fixo (segundos)
+const MAX_FRAME_TIME = 0.25;  // evita "death spiral" se o frame demorar muito
+
+let lastTime  = 0;
+let accumulator = 0;
+
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+
+// Configura o canvas com escala inteira
+canvas.width  = CONST.W * CONST.SCALE;
+canvas.height = CONST.H * CONST.SCALE;
+ctx.imageSmoothingEnabled = false; // sem suavização — estilo pixel art
+
+// Escala o contexto: tudo desenhado em coordenadas lógicas (224x256)
+// será automaticamente ampliado pelo fator SCALE
+ctx.setTransform(CONST.SCALE, 0, 0, CONST.SCALE, 0, 0);
+
+function gameLoop(timestamp) {
+  const now = timestamp / 1000; // converte para segundos
+  let frameTime = now - lastTime;
+  lastTime = now;
+
+  // Limita o tempo máximo de frame (evita loop infinito se aba ficar em background)
+  if (frameTime > MAX_FRAME_TIME) frameTime = MAX_FRAME_TIME;
+
+  accumulator += frameTime;
+
+  // Processa todos os passos fixos acumulados
+  while (accumulator >= FIXED_DT) {
+    update(FIXED_DT);
+    accumulator -= FIXED_DT;
+  }
+
+  // Renderiza (sempre uma vez por requestAnimationFrame)
+  render(ctx);
+
+  requestAnimationFrame(gameLoop);
+}
+
+// Inicializa o jogo no menu
+requestAnimationFrame(ts => { lastTime = ts / 1000; gameLoop(ts); });
+</script>
+</body>
+</html>
