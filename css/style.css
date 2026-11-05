@@ -1,0 +1,24 @@
+/* ============================================================
+   DONKEY KONG CLONE — Estilos globais
+   Fundo preto, canvas centralizado, sem suavização (pixel art)
+   ============================================================ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* image-rendering: pixelated garante que a escala 3× não suavize os pixels */
+canvas {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
