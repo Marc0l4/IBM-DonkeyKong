@@ -25,6 +25,28 @@ var DK = window.DK || {};
   // HUD ocupa os primeiros 36 px do topo (HIGH SCORE + linha de vidas)
   const HUD_H = 36;
 
+  // ── Helpers para montar as fases sem erro de alinhamento ──────────────────
+  // hAt: altura (y) da viga no x dado, por interpolação linear. Se x estiver fora
+  // da viga, usa a ponta mais próxima (assim escadas decorativas não quebram).
+  // (physics.js carrega DEPOIS deste arquivo, por isso o lerp é repetido aqui.)
+  function hAt(beam, x) {
+    x = Math.max(beam.x1, Math.min(beam.x2, x));
+    return beam.y1 + (x - beam.x1) / (beam.x2 - beam.x1) * (beam.y2 - beam.y1);
+  }
+  // ladder: escada entre a viga de baixo (lower) e a de cima (upper) em x.
+  // yTop/yBottom saem direto da altura das vigas → a escada sempre encosta nelas.
+  function ladder(x, lower, upper, broken) {
+    return { x: x, yTop: hAt(upper, x), yBottom: hAt(lower, x), broken: broken };
+  }
+
+  // REGRA DE GEOMETRIA (vale para as 3 fases) — é o que faz o barril cair de
+  // plataforma em plataforma, como no arcade:
+  //   P5 desce p/ direita → barril rola p/ direita e cai na ponta direita
+  //   P4 desce p/ esquerda (x2 = borda, buraco à esquerda) → rola p/ esquerda
+  //   P3 desce p/ direita (x1 = borda, buraco à direita)  → rola p/ direita
+  //   ... e assim alternando até P0, que desce p/ esquerda rumo ao barril de óleo.
+  // A viga de baixo SEMPRE cobre a ponta por onde o barril cai da de cima.
+
   // ── FASE 1 ────────────────────────────────────────────────────────────────
   // Layout clássico: vigas inclinadas alternando o sentido, dificuldade base.
   //
@@ -53,7 +75,7 @@ var DK = window.DK || {};
       { x1: 44, y1: p2y + 8, x2: W - 4, y2: p2y      }, // P2 sobe p/ direita
       { x1:  4, y1: p3y,     x2: W - 44,y2: p3y + 8  }, // P3 desce p/ direita
       { x1: 44, y1: p4y + 6, x2: W - 4, y2: p4y      }, // P4 sobe p/ direita
-      { x1:  4, y1: p5y + 2, x2: W - 4, y2: p5y      }, // P5 topo (leve inclinação)
+      { x1:  4, y1: p5y,     x2: W - 4, y2: p5y + 2  }, // P5 topo (desce leve p/ direita)
     ],
     ladders: [
       // Entre P0 e P1
@@ -75,7 +97,7 @@ var DK = window.DK || {};
     positions: {
       MARIO_START: { x: 18,      y: p0y - C.MARIO_H },
       DK:          { x: 10,      y: p5y - C.DK_H    },
-      PAULINE:     { x: W - 44,  y: p5y - C.PAULINE_H },
+      PAULINE:     { x: W - 44,  y: p5y + 2 - C.PAULINE_H },
       OIL_BARREL:  { x: 4,       y: p0y - 16        },
     },
     hammers: [
@@ -104,41 +126,44 @@ var DK = window.DK || {};
   const q4y = q3y - G + 4;
   const q5y = q4y - G + 6;
 
+  const LEVEL_2_BEAMS = [
+    { x1:  4, y1: q0y,      x2: W - 4,  y2: q0y - 4  }, // P0 chão (sobe p/ direita → barril rola p/ esquerda)
+    { x1:  4, y1: q1y,      x2: W - 50, y2: q1y + 12 }, // P1 desce p/ direita (íngreme)
+    { x1: 50, y1: q2y + 14, x2: W - 4,  y2: q2y      }, // P2 desce p/ esquerda (íngreme)
+    { x1:  4, y1: q3y,      x2: W - 50, y2: q3y + 10 }, // P3 desce p/ direita
+    { x1: 30, y1: q4y + 12, x2: W - 4,  y2: q4y      }, // P4 desce p/ esquerda
+    { x1:  4, y1: q5y,      x2: W - 4,  y2: q5y + 2  }, // P5 topo (desce leve p/ direita)
+  ];
+  const LB2 = LEVEL_2_BEAMS;
+
   const LEVEL_2 = {
-    beams: [
-      { x1:  4, y1: q0y,      x2: W - 4,  y2: q0y - 4  }, // P0 chão
-      { x1:  4, y1: q1y + 12, x2: W - 50, y2: q1y      }, // P1 sobe p/ direita
-      { x1: 50, y1: q2y,      x2: W - 4,  y2: q2y + 14 }, // P2 desce p/ direita (íngreme)
-      { x1:  4, y1: q3y + 10, x2: W - 50, y2: q3y      }, // P3 sobe p/ direita
-      { x1: 30, y1: q4y,      x2: W - 4,  y2: q4y + 12 }, // P4 desce p/ direita
-      { x1:  4, y1: q5y + 2,  x2: W - 4,  y2: q5y      }, // P5 topo
-    ],
+    beams: LB2,
     ladders: [
       // Entre P0 e P1  (só uma escalável)
-      { x: 160, yTop: q1y,     yBottom: q0y - 4,  broken: false },
-      { x:  40, yTop: q1y + 4, yBottom: q0y - 4,  broken: true  },
+      ladder(160, LB2[0], LB2[1], false),
+      ladder( 40, LB2[0], LB2[1], true ),
       // Entre P1 e P2
-      { x:  80, yTop: q2y,     yBottom: q1y + 12, broken: false },
-      { x: 180, yTop: q2y,     yBottom: q1y + 8,  broken: true  },
-      { x: 130, yTop: q2y + 4, yBottom: q1y + 8,  broken: true  },
+      ladder( 80, LB2[1], LB2[2], false),
+      ladder(180, LB2[1], LB2[2], true ),
+      ladder(130, LB2[1], LB2[2], true ),
       // Entre P2 e P3
-      { x:  60, yTop: q3y,     yBottom: q2y + 14, broken: false },
-      { x: 170, yTop: q3y,     yBottom: q2y + 10, broken: true  },
+      ladder( 60, LB2[2], LB2[3], false),
+      ladder(170, LB2[2], LB2[3], true ),
       // Entre P3 e P4  (só uma escalável, mais à direita)
-      { x: 150, yTop: q4y,     yBottom: q3y + 10, broken: false },
-      { x:  30, yTop: q4y,     yBottom: q3y + 6,  broken: true  },
+      ladder(150, LB2[3], LB2[4], false),
+      ladder( 40, LB2[3], LB2[4], true ),
       // Entre P4 e P5
-      { x:  70, yTop: q5y,     yBottom: q4y + 12, broken: false },
-      { x: 190, yTop: q5y,     yBottom: q4y + 8,  broken: true  },
+      ladder( 70, LB2[4], LB2[5], false),
+      ladder(190, LB2[4], LB2[5], true ),
     ],
     positions: {
       MARIO_START: { x: 18,     y: q0y - C.MARIO_H },
       DK:          { x: 10,     y: q5y - C.DK_H    },
-      PAULINE:     { x: W - 44, y: q5y - C.PAULINE_H },
+      PAULINE:     { x: W - 44, y: q5y + 2 - C.PAULINE_H },
       OIL_BARREL:  { x: 4,      y: q0y - 16        },
     },
     hammers: [
-      { x: 110, y: q2y - C.HAMMER_H - 2 },
+      { x: 110, y: hAt(LB2[2], 114) - C.HAMMER_H - 2 },
     ],
     params: {
       barrelSpeed:         1.6,   // barris mais rápidos
@@ -162,41 +187,44 @@ var DK = window.DK || {};
   const r4y = r3y - G + 4;
   const r5y = r4y - G + 8;
 
+  const LEVEL_3_BEAMS = [
+    { x1:  4, y1: r0y,      x2: W - 4,  y2: r0y - 4  }, // P0 chão (sobe p/ direita → barril rola p/ esquerda)
+    { x1:  4, y1: r1y,      x2: W - 60, y2: r1y + 10 }, // P1 desce p/ direita (curta)
+    { x1: 60, y1: r2y + 16, x2: W - 4,  y2: r2y      }, // P2 desce p/ esquerda (íngreme)
+    { x1:  4, y1: r3y,      x2: W - 60, y2: r3y + 12 }, // P3 desce p/ direita
+    { x1: 40, y1: r4y + 8,  x2: W - 4,  y2: r4y      }, // P4 desce p/ esquerda
+    { x1:  4, y1: r5y,      x2: W - 4,  y2: r5y + 2  }, // P5 topo (desce leve p/ direita)
+  ];
+  const LB3 = LEVEL_3_BEAMS;
+
   const LEVEL_3 = {
-    beams: [
-      { x1:  4, y1: r0y,      x2: W - 4,  y2: r0y - 4  }, // P0 chão
-      { x1:  4, y1: r1y + 10, x2: W - 60, y2: r1y      }, // P1 sobe p/ dir (curta)
-      { x1: 60, y1: r2y,      x2: W - 4,  y2: r2y + 16 }, // P2 desce p/ dir (íngreme)
-      { x1:  4, y1: r3y,      x2: W - 60, y2: r3y + 12 }, // P3 desce p/ dir
-      { x1: 40, y1: r4y + 8,  x2: W - 4,  y2: r4y      }, // P4 sobe p/ dir
-      { x1:  4, y1: r5y + 2,  x2: W - 4,  y2: r5y      }, // P5 topo
-    ],
+    beams: LB3,
     ladders: [
       // Entre P0 e P1  (só uma escalável — dificulta o início)
-      { x: 150, yTop: r1y,      yBottom: r0y - 4,  broken: false },
-      { x:  30, yTop: r1y + 2,  yBottom: r0y - 4,  broken: true  },
+      ladder(150, LB3[0], LB3[1], false),
+      ladder( 30, LB3[0], LB3[1], true ),
       // Entre P1 e P2
-      { x:  90, yTop: r2y,      yBottom: r1y + 10, broken: false },
-      { x: 160, yTop: r2y,      yBottom: r1y + 6,  broken: true  },
+      ladder( 90, LB3[1], LB3[2], false),
+      ladder(160, LB3[1], LB3[2], true ),
       // Entre P2 e P3
-      { x: 100, yTop: r3y,      yBottom: r2y + 16, broken: false },
-      { x:  50, yTop: r3y,      yBottom: r2y + 12, broken: true  },
-      { x: 180, yTop: r3y + 2,  yBottom: r2y + 12, broken: true  },
+      ladder(100, LB3[2], LB3[3], false),
+      ladder( 70, LB3[2], LB3[3], true ),
+      ladder(180, LB3[2], LB3[3], true ),
       // Entre P3 e P4  (só uma escalável, extremo esquerdo)
-      { x:  40, yTop: r4y,      yBottom: r3y + 12, broken: false },
-      { x: 170, yTop: r4y + 2,  yBottom: r3y + 8,  broken: true  },
+      ladder( 48, LB3[3], LB3[4], false),
+      ladder(150, LB3[3], LB3[4], true ),
       // Entre P4 e P5
-      { x: 120, yTop: r5y,      yBottom: r4y + 8,  broken: false },
-      { x:  60, yTop: r5y + 2,  yBottom: r4y + 4,  broken: true  },
+      ladder(120, LB3[4], LB3[5], false),
+      ladder( 60, LB3[4], LB3[5], true ),
     ],
     positions: {
       MARIO_START: { x: 18,     y: r0y - C.MARIO_H },
       DK:          { x: 10,     y: r5y - C.DK_H    },
-      PAULINE:     { x: W - 44, y: r5y - C.PAULINE_H },
+      PAULINE:     { x: W - 44, y: r5y + 2 - C.PAULINE_H },
       OIL_BARREL:  { x: 4,      y: r0y - 16        },
     },
     hammers: [
-      { x: 80, y: r3y - C.HAMMER_H - 2 },
+      { x: 80, y: hAt(LB3[3], 84) - C.HAMMER_H - 2 },
     ],
     params: {
       barrelSpeed:         2.0,    // barris muito rápidos

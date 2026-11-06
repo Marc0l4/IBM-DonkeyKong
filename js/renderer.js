@@ -132,9 +132,8 @@ var DK = window.DK || {};
     ctx.fillStyle = C.CLR_HUD;
     ctx.fillText(String(sc.bonus).padStart(5, ' '), bx + 8, by + 13);
 
-    // Linha separadora abaixo do HUD
-    ctx.fillStyle = '#333';
-    ctx.fillRect(0, 36, C.W, 1);
+    // Sem linha separadora — ela conflitava com o sprite do DK e o box BONUS
+    // que ficam na área y=24..60 após o aumento da altura lógica do canvas.
   }
 
   // ── TELA DE MENU ──────────────────────────────────────────────────────────
@@ -197,34 +196,78 @@ var DK = window.DK || {};
     ctx.fillText('BONUS: +' + DK.ScoreSystem.bonus, 72, 150);
     ctx.fillText('SCORE: ' + String(DK.ScoreSystem.score).padStart(6, '0'), 72, 162);
 
-    // Indicador da próxima fase
-    var nextLevel = DK.game.levelIndex + 2; // levelIndex é 0-based
-    if (nextLevel <= DK.LEVELS.length) {
+
+    // Indica a próxima fase (só se não for a última)
+    var nextIdx = DK.game.levelIndex + 1; // levelIndex ainda não foi incrementado aqui
+    if (nextIdx < DK.LEVELS.length) {
       ctx.fillStyle = C.CLR_BONUS;
-      ctx.fillText('PROXIMO: L=' + String(nextLevel).padStart(2, '0'), 68, 182);
+      ctx.fillText('PROXIMO: L=' + String(nextIdx + 1).padStart(2, '0'), 68, 182);
+    } else {
+      // Última fase concluída — anuncia a vitória final
+      ctx.fillStyle = '#ffff00';
+      ctx.fillText('FASE FINAL COMPLETA!', 42, 182);
     }
   }
 
-  // ── TELA WIN FINAL (após fase 3) ──────────────────────────────────────────
+  // ── TELA WIN FINAL (placar completo após fase 3) ─────────────────────────
+  // Tela full-screen (fundo preto sólido, não overlay) com estilo arcade.
+  // "NEW RECORD!" pisca alternando a cada 500ms usando Date.now().
   function drawWinScreen(ctx) {
-    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    var sc   = DK.ScoreSystem;
+    var g    = DK.game;
+    // Pisca a cada 500ms: Date.now() / 500 é um inteiro que alterna par/ímpar
+    var blink = Math.floor(Date.now() / 500) % 2 === 0;
+
+    // Fundo preto sólido (não overlay — é a tela principal de vitória)
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, C.W, C.H);
 
-    ctx.font = '10px monospace';
+    // Título
+    ctx.font = '8px monospace';
     ctx.fillStyle = '#ffff00';
-    ctx.fillText('YOU  WIN!', 68, 110);
+    ctx.fillText('CONGRATULATIONS!', 36, 60);
+
+    // Separador decorativo
+    ctx.fillStyle = C.CLR_BEAM;
+    ctx.fillRect(20, 68, C.W - 40, 1);
+
+    // Placar
+    ctx.font = '6px monospace';
+    ctx.fillStyle = C.CLR_HUD;
+    ctx.fillText('FINAL SCORE', 72, 90);
+    ctx.font = '8px monospace';
+    ctx.fillStyle = '#ffff00';
+    ctx.fillText(String(sc.score).padStart(6, '0'), 76, 104);
 
     ctx.font = '6px monospace';
     ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText('BONUS: +' + DK.ScoreSystem.bonus,                             72, 132);
-    ctx.fillText('SCORE: ' + String(DK.ScoreSystem.score).padStart(6, '0'),     72, 144);
+    ctx.fillText('HIGH SCORE', 74, 122);
+    ctx.fillText(String(sc.highScore).padStart(6, '0'), 82, 134);
 
-    if (DK.ScoreSystem.score >= DK.ScoreSystem.highScore) {
+    // "NEW RECORD!" pisca se o score atual bate o recorde
+    if (sc.score >= sc.highScore && sc.score > 0 && blink) {
       ctx.fillStyle = '#ffff00';
-      ctx.fillText('** NOVO RECORDE! **', 48, 162);
+      ctx.fillText('** NEW RECORD! **', 52, 150);
     }
-    ctx.fillStyle = C.CLR_BONUS;
-    ctx.fillText('ENTER PARA REINICIAR', 40, 192);
+
+    // Separador
+    ctx.fillStyle = C.CLR_BEAM;
+    ctx.fillRect(20, 158, C.W - 40, 1);
+
+    // Estatísticas da partida
+    ctx.fillStyle = C.CLR_HUD;
+    ctx.fillText('FASES CONCLUIDAS: 3/3', 38, 174);
+    ctx.fillText('VIDAS RESTANTES:  ' + g.lives, 38, 186);
+
+    // Separador
+    ctx.fillStyle = C.CLR_BEAM;
+    ctx.fillRect(20, 194, C.W - 40, 1);
+
+    // "PRESS ENTER" piscando
+    if (blink) {
+      ctx.fillStyle = C.CLR_BONUS;
+      ctx.fillText('PRESS ENTER TO PLAY AGAIN', 26, 214);
+    }
   }
 
   // ── RENDER PRINCIPAL ──────────────────────────────────────────────────────
@@ -234,6 +277,12 @@ var DK = window.DK || {};
 
     if (DK.game.state === 'MENU') {
       drawMenuScreen(ctx);
+      return;
+    }
+
+    // WIN é tela full-screen — não desenha a fase por baixo
+    if (DK.game.state === 'WIN') {
+      drawWinScreen(ctx);
       return;
     }
 
@@ -255,10 +304,9 @@ var DK = window.DK || {};
     // HUD sempre por cima de tudo
     drawHUD(ctx);
 
-    // Overlays de estado
-    if (DK.game.state === 'GAME_OVER')       drawGameOverScreen(ctx);
-    if (DK.game.state === 'LEVEL_COMPLETE')  drawLevelCompleteScreen(ctx);
-    if (DK.game.state === 'WIN')             drawWinScreen(ctx);
+    // Overlays de estado (sobre a fase)
+    if (DK.game.state === 'GAME_OVER')      drawGameOverScreen(ctx);
+    if (DK.game.state === 'LEVEL_COMPLETE') drawLevelCompleteScreen(ctx);
   };
 
 }());

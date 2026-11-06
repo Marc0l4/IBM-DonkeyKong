@@ -341,6 +341,7 @@ var DK = window.DK || {};
       rollFrame: 0, rollTimer: 0,
       _targetBeam: -1,
       _ladderDescent: false,
+      _lastLadder: -1,   // última escada sorteada (evita sortear 2x a mesma)
 
       hitbox: function () {
         return { x: this.x + 1, y: this.y + 1, w: this.w - 2, h: this.h - 2 };
@@ -367,30 +368,38 @@ var DK = window.DK || {};
         var h  = ph().beamHeightAt(beam, cx);
         if (h !== Infinity) this.y = h - this.h;
 
-        // Chegou na ponta direita?
-        if (this.x + this.w > beam.x2 + 2) {
-          if (this._tryLadderDescent()) return;
+        // Passando por uma escada escalável? Pode descer por ela
+        if (this._tryLadderDescent()) return;
+
+        // Chegou na ponta? Cai para a viga de baixo.
+        // IMPORTANTE: só vale se o barril está INDO na direção da ponta (vx > 0 p/ a
+        // direita, vx < 0 p/ a esquerda). O barril pousa justamente na ponta da viga
+        // de baixo, e sem essa checagem ele "caía" de novo no mesmo frame, pulando
+        // plataformas (P4 → P2 → P0 em vez de P4 → P3 → P2...).
+        if (this.vx > 0 && this.x + this.w > beam.x2 + 2) {
           this._startFall(beam.x2);
         }
-        // Chegou na ponta esquerda?
-        else if (this.x < beam.x1 - 2) {
-          if (this._tryLadderDescent()) return;
+        else if (this.vx < 0 && this.x < beam.x1 - 2) {
           this._startFall(beam.x1);
         }
       },
 
       _tryLadderDescent: function () {
-        // 25%+ de chance de descer pela escada quando passa por uma
+        // Chance de descer por uma escada escalável que PARTE da viga atual
+        // (o topo da escada, yTop, encosta na viga em que o barril está).
+        // Cada escada é testada uma única vez por passagem (_lastLadder).
         var ladders = lvl().ladders;
         var params  = lvl().params;
+        var beam    = lvl().beams[this.beamIndex];
         var cx      = this.x + this.w / 2;
         for (var i = 0; i < ladders.length; i++) {
           var l = ladders[i];
           if (l.broken) continue;
-          if (Math.abs(cx - l.x) > 12) continue;
-          // Verifica se a escada liga a viga atual à de baixo
-          var beamBottom = ph().beamHeightAt(lvl().beams[this.beamIndex], l.x);
-          if (Math.abs(beamBottom - l.yBottom) > 12) continue;
+          if (Math.abs(cx - l.x) > Math.abs(this.vx)) continue;      // ainda não cruzou o centro
+          var beamHere = ph().beamHeightAt(beam, l.x);
+          if (beamHere === Infinity || Math.abs(beamHere - l.yTop) > 4) continue; // escada de outra viga
+          if (this._lastLadder === i) continue;                      // já sorteada nesta passagem
+          this._lastLadder = i;
           if (Math.random() < params.ladderDescendChance) {
             this.x = l.x - this.w / 2;
             this.state = 'FALLING';
@@ -415,9 +424,12 @@ var DK = window.DK || {};
       _updateFalling: function () {
         var beams = lvl().beams;
 
-        // Se já caiu além do barril de óleo (P-1), destrói
+        // Segurança: qualquer barril que saia pela base da tela é destruído
+        // (antes, só o caso "_targetBeam < 0" tinha essa checagem).
+        if (this.y > C.H + 20) { this.state = 'DEAD'; return; }
+
+        // Caiu além da viga mais baixa (chão): só continua caindo até sair da tela
         if (this._targetBeam < 0) {
-          if (this.y > C.H) this.state = 'DEAD';
           this.y += this.vy;
           this.vy += C.BARREL_FALL_GRAV;
           return;
@@ -429,25 +441,28 @@ var DK = window.DK || {};
         var yNext = this.y + this.h; // y dos pés DEPOIS de mover
         var cx    = this.x + this.w / 2;
 
-        // ── FIX DO BUG DE ATRAVESSAR VIGAS ───────────────────────────────
-        // sweepBeamsDown varre o intervalo [yPrev, yNext] e encontra a
-        // PRIMEIRA viga cruzada — mesmo que o barril tenha pulado várias vigas
-        // num único frame (velocidade alta).
-        // Antes, verificávamos só a posição atual, o que deixava o barril
-        // atravessar a viga se vy fosse maior que o gap entre elas.
-        var hit = ph().sweepBeamsDown(beams, cx, yPrev, yNext);
+        // ── FIX DO BUG "BARRIL VOLTA NA PONTA DA VIGA" ────────────────────
+        // Causa: a varredura aceitava a PRÓPRIA viga de origem (hit.beamIndex <=
+        // this.beamIndex). No primeiro frame da queda a ponta da viga ainda estava
+        // "cruzada", então o barril pousava de volta nela, voltava a rolar, passava
+        // da ponta, caía, pousava de novo... num ciclo infinito (ROLLING/FALLING
+        // alternando a cada frame, preso na borda).
+        // Solução: passar this.beamIndex como limite — só vigas ABAIXO contam.
+        // sweepBeamsDown varre [yPrev, yNext], então ainda não atravessa vigas
+        // mesmo em velocidade alta.
+        var hit = ph().sweepBeamsDown(beams, cx, yPrev, yNext, this.beamIndex);
 
-        if (hit !== null && hit.beamIndex <= this.beamIndex) {
+        if (hit !== null) {
           // Pousou! Snap para a superfície da viga
           this.y    = hit.landY - this.h;
           this.vy   = 0;
           this.beamIndex = hit.beamIndex;
           this.state     = 'ROLLING';
+          this._lastLadder = -1;
           // Direção de rolagem = sentido da inclinação da nova viga
+          // (desce p/ direita → +, desce p/ esquerda → -), na velocidade da fase
           var b     = beams[hit.beamIndex];
-          var slope = b.y2 - b.y1; // positivo = desce p/ dir; negativo = sobe p/ dir
-          this.vx   = slope >= 0 ? Math.abs(this.vx) : -Math.abs(this.vx);
-          // Garante a velocidade correta da fase (pode ter sido alterada por outro motivo)
+          var slope = b.y2 - b.y1;
           var spd   = lvl().params.barrelSpeed;
           this.vx   = slope >= 0 ? spd : -spd;
           this._ladderDescent = false;

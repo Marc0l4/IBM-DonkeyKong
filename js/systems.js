@@ -1,4 +1,3 @@
-
 // ===== systems.js =====
 // Sistemas de jogo que orquestram grupos de entidades:
 //   BarrelSpawner  — cria e gerencia barris ao longo do tempo
@@ -46,9 +45,11 @@ var DK = window.DK || {};
       var lvl   = DK.LEVELS[DK.game.levelIndex];
       var topBeam = lvl.beams[lvl.beams.length - 1]; // última viga = topo
       var spawnX  = topBeam.x1 + 10;
-      var spawnY  = topBeam.y1 - C.BARREL_H;
+      // y exato da viga no ponto de nascimento (a viga do topo é levemente inclinada)
+      var spawnY  = DK.physics.beamHeightAt(topBeam, spawnX + C.BARREL_W / 2) - C.BARREL_H;
       var b = DK.createBarrel(spawnX, spawnY, lvl.beams.length - 1, lvl.params.barrelSpeed);
-      b.vx = lvl.params.barrelSpeed; // começa rolando para a direita
+      // Direção inicial = sentido da inclinação da viga (mesma regra do pouso)
+      b.vx = (topBeam.y2 - topBeam.y1) >= 0 ? lvl.params.barrelSpeed : -lvl.params.barrelSpeed;
       DK.game.barrels.push(b);
     },
   };

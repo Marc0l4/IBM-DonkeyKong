@@ -54,11 +54,15 @@ var DK = window.DK || {};
    * @param {number} cx      — x central do objeto (para o lerp)
    * @param {number} yPrev   — y dos pés antes do movimento
    * @param {number} yNext   — y dos pés após o movimento
+   * @param {number} [belowIndex] — se informado, só considera vigas com índice
+   *                 MENOR que ele (vigas abaixo da de origem). Usado pelo barril em
+   *                 queda para nunca "pousar de volta" na viga de onde acabou de sair.
    * @returns {{ beamIndex, landY }} ou null
    */
-  function sweepBeamsDown(beams, cx, yPrev, yNext) {
+  function sweepBeamsDown(beams, cx, yPrev, yNext, belowIndex) {
     var best = null;
-    for (var i = 0; i < beams.length; i++) {
+    var limit = (belowIndex === undefined) ? beams.length : belowIndex;
+    for (var i = 0; i < limit; i++) {
       var h = beamHeightAt(beams[i], cx);
       if (h === Infinity) continue;
       // A viga foi cruzada se estava ACIMA dos pés anteriores (yPrev <= h)

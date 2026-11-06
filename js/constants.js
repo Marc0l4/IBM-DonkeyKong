@@ -22,6 +22,11 @@ DK.CONST = {
   // Validação: pulo máximo ≈ vy²/(2×g) = 8²/(2×0.45) ≈ 71 px > PLATFORM_GAP(52) + Mario(14) ✓
   PLATFORM_GAP: 52,
 
+  // Inclinação da viga do topo (P5): deltaY positivo = desce para a direita.
+  // Como no arcade original — garante que o barril role para a direita ao nascer,
+  // sem precisar de caso especial para viga plana (slope >= 0 → vx positivo).
+  TOP_BEAM_SLOPE: 8,
+
   // ── Física ────────────────────────────────────────────────────────────────
   GRAVITY:          0.45,  // aceleração gravitacional (px por frame²)
   JUMP_VY:         -8.0,   // impulso vertical do pulo (negativo = para cima)
