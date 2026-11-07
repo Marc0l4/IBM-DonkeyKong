@@ -2,6 +2,10 @@
 
 Clone simplificado do **Donkey Kong (1981)** em HTML5 Canvas puro. Projeto educacional para workshops de desenvolvimento de jogos 2D no navegador, sem frameworks, sem bundler, sem servidor.
 
+## Jogue online
+
+**[Abrir o jogo na Vercel](https://ibmdonkeykong.vercel.app/)**
+
 ---
 
 ## Como jogar
@@ -46,7 +50,7 @@ Completar as 3 fases leva à tela de vitória final. Game Over reinicia da fase 
 
 ## Estrutura de arquivos
 
-```
+```text
 donkeyKong/
 ├── index.html          ← marcação HTML, links de CSS e scripts
 ├── README.md
@@ -62,21 +66,11 @@ donkeyKong/
     ├── renderer.js     ← todas as funções de desenho e HUD
     ├── game.js         ← DK.game{}, update(), máquina de estados
     └── main.js         ← configuração do canvas e game loop
-```
-
-### Por que scripts clássicos (sem `type="module"`)?
-
-Módulos ES exigem servidor HTTP (por causa do CORS). Scripts clássicos funcionam com `file://` — basta duplo clique. Para manter o namespace limpo sem módulos, todos os arquivos contribuem para um único objeto global: `window.DK`.
-
----
-
-## Arquitetura
-
-### Namespace `DK`
-
-Cada arquivo faz `var DK = window.DK || {}` e acrescenta suas propriedades:
-
-```
+Por que scripts clássicos (sem type="module")?
+Módulos ES exigem servidor HTTP (por causa do CORS). Scripts clássicos funcionam com file:// — basta duplo clique. Para manter o namespace limpo sem módulos, todos os arquivos contribuem para um único objeto global: window.DK.
+Arquitetura
+Namespace DK
+Cada arquivo faz var DK = window.DK || {} e acrescenta suas propriedades:
 DK.CONST          → constantes
 DK.LEVELS[]       → dados das fases
 DK.input          → estado do teclado
@@ -96,24 +90,15 @@ DK.game{}         → estado global
 DK.update()       → update principal
 DK.startGame()    → inicia do zero
 DK.startLevel()   → carrega fase atual
-```
-
-### Game Loop (Fixed Timestep)
-
-```
+Game Loop (Fixed Timestep)
 requestAnimationFrame
   └─ accumulator += frameTime
   └─ while (accumulator >= 1/60):
       DK.update(1/60)   ← física sempre a 60 Hz
       accumulator -= 1/60
   └─ DK.render(ctx)     ← render uma vez por frame
-```
-
 O timestep fixo garante que a física seja idêntica em monitores de 60 Hz, 120 Hz ou 144 Hz.
-
-### Máquina de estados
-
-```
+Máquina de estados
 MENU
   │ Enter
   ▼
@@ -127,15 +112,10 @@ LEVEL_COMPLETE          GAME_OVER
                            │ Enter
                            ▼
                           MENU
-```
-
-### Fases como dados (levels.js)
-
-Toda a lógica do jogo lê `DK.LEVELS[DK.game.levelIndex]` — sem `if (fase === 2)` espalhado pelo código. Cada fase define:
-
-```js
+Fases como dados (levels.js)
+Toda a lógica do jogo lê DK.LEVELS[DK.game.levelIndex] — sem if (fase === 2) espalhado pelo código. Cada fase define:
 {
-  beams:    [ { x1, y1, x2, y2 }, ... ],   // plataformas inclinadas
+  beams:    [ { x1, y1, x2, y2 }, ... ],
   ladders:  [ { x, yTop, yBottom, broken }, ... ],
   positions: { MARIO_START, DK, PAULINE, OIL_BARREL },
   hammers:  [ { x, y }, ... ],
@@ -145,43 +125,33 @@ Toda a lógica do jogo lê `DK.LEVELS[DK.game.levelIndex]` — sem `if (fase ===
     hasFireballs, fireballs: [ { beamIndex, side }, ... ]
   }
 }
-```
+As posições y das vigas são derivadas da constante PLATFORM_GAP (52 px), então ajustar esse valor recalcula toda a fase.
+Fix do bug de barris atravessando vigas
+Problema original: o barril verificava só a posição atual. Com vy alto, podia “pular” uma viga em um único frame.
 
-As posições `y` das vigas são derivadas da constante `PLATFORM_GAP` (52 px), então ajustar esse valor recalcula toda a fase.
-
-### Fix do bug de barris atravessando vigas
-
-**Problema original:** o barril verificava só a posição atual. Com `vy` alto, podia "pular" uma viga em um único frame.
-
-**Solução — `sweepBeamsDown(beams, cx, yPrev, yNext)`:**
-Varre o intervalo `[yPrev, yNext]` e encontra a **primeira viga cruzada** no caminho. O barril pousa na viga mais próxima encontrada, zera `vy` e inverte a direção de acordo com o slope da nova viga.
-
-```
+Solução — sweepBeamsDown(beams, cx, yPrev, yNext):
+Varre o intervalo [yPrev, yNext] e encontra a primeira viga cruzada no caminho. O barril pousa na viga mais próxima encontrada, zera vy e inverte a direção de acordo com o slope da nova viga.
   Antes:        Depois (sweep):
   ════════       ════════
                     ← barril pousa aqui ✓
   ════════       ════════
   ↑ atravessa   ↑ detectado antes
-```
-
----
-
-## Requisitos técnicos
-
+Requisitos técnicos
 - Nenhuma biblioteca externa
-- Nenhum servidor necessário — `file://` funciona
+- Nenhum servidor necessário — file:// funciona
 - Funciona em qualquer deploy estático (Vercel, GitHub Pages, Netlify)
 - Sem erros no console do navegador
-- High score salvo em `localStorage`
+- High score salvo em localStorage
 - Resolução lógica 224×320 px, escalada 3× (672×960 px no monitor)
-- Todos os sprites desenhados por código (retângulos, `fillRect`)
+- Todos os sprites desenhados por código (retângulos, fillRect)
+Deploy na Vercel
+O jogo está publicado em:
 
----
+https://ibmdonkeykong.vercel.app/
 
-## Deploy na Vercel
-
-1. Faça push da pasta `donkeyKong/` para um repositório GitHub
-2. Importe o repositório na Vercel
-3. **Framework Preset:** `Other`
-4. **Root Directory:** `donkeyKong` (ou raiz, se já for a pasta do projeto)
-5. Clique em Deploy — nenhuma configuração adicional necessária
+Para criar seu próprio deploy:
+1. Faça push da pasta donkeyKong/ para um repositório GitHub.
+2. Importe o repositório na Vercel.
+3. Em Framework Preset, selecione Other.
+4. Em Root Directory, use donkeyKong — ou a raiz, caso ela já seja a pasta do projeto.
+5. Clique em Deploy. Nenhuma configuração adicional é necessária.
