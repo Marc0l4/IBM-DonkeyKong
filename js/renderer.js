@@ -1,7 +1,20 @@
 // ===== renderer.js =====
 // Todas as funções de desenho do jogo.
-// Recebem `ctx` como parâmetro — sem acesso direto ao canvas.
+// Recebem `ctx` como parâmetro — o canvas offscreen lógico (224×320).
 // Leem DK.game e DK.ScoreSystem para os dados do HUD.
+//
+// ── Pixel-perfect: boas práticas adotadas aqui ────────────────────────────
+//  1. Nenhum fillText — todo texto usa bitmapText() com fillRect por glifo.
+//  2. Vigas inclinadas são desenhadas coluna a coluna com fillRect, eliminando
+//     o antialiasing de path/fill em bordas diagonais.
+//  3. Todas as coordenadas passadas para fillRect/fillText são inteirizadas
+//     com pxI() (Math.round). A física lê os valores originais (float); apenas
+//     o render usa os arredondados.
+//  4. strokeRect é evitado (bordas de 1px em sub-pixel ficam borradas);
+//     substituído por quatro fillRect de 1px.
+//  5. rgba(0,0,0,0.75) do overlay ainda gera semi-transparência — isso é
+//     intencional (overlay de game over/tela) e não causa bordas borradas
+//     porque é um fillRect inteiro (sem bordas diagonais).
 
 var DK = window.DK || {};
 
@@ -10,6 +23,117 @@ var DK = window.DK || {};
 
   var C = DK.CONST;
 
+  // ── UTILITÁRIO: inteiriza coordenada para render ───────────────────────────
+  // Math.round garante que cada pixel lógico coincida com um pixel inteiro
+  // no buffer offscreen, eliminando bordas semi-transparentes por sub-pixel.
+  // NÃO use este valor na física — só no render.
+  function pxI(v) { return Math.round(v) | 0; }
+
+  // ── FONTE BITMAP ──────────────────────────────────────────────────────────
+  // Cada glifo é descrito como um array de strings binárias de 5 chars:
+  //   '1' = pixel aceso, '0' = pixel apagado
+  // Grade: FONT_CW(5) × FONT_CH(7) pixels por glifo.
+  // Cobertura: A-Z, 0-9, espaço, : ! - . / * = @ + ' ? ( ) # %
+  // Os chars efetivamente usados nas telas do jogo são marcados com (*).
+  var FONT_GLYPHS = {
+    'A': ['01110','10001','10001','11111','10001','10001','10001'],
+    'B': ['11110','10001','10001','11110','10001','10001','11110'],
+    'C': ['01111','10000','10000','10000','10000','10000','01111'],
+    'D': ['11110','10001','10001','10001','10001','10001','11110'],
+    'E': ['11111','10000','10000','11110','10000','10000','11111'],
+    'F': ['11111','10000','10000','11110','10000','10000','10000'],
+    'G': ['01111','10000','10000','10111','10001','10001','01111'],
+    'H': ['10001','10001','10001','11111','10001','10001','10001'],
+    'I': ['01110','00100','00100','00100','00100','00100','01110'],
+    'J': ['00011','00001','00001','00001','00001','10001','01110'],
+    'K': ['10001','10010','10100','11000','10100','10010','10001'],
+    'L': ['10000','10000','10000','10000','10000','10000','11111'],
+    'M': ['10001','11011','10101','10001','10001','10001','10001'],
+    'N': ['10001','11001','10101','10011','10001','10001','10001'],
+    'O': ['01110','10001','10001','10001','10001','10001','01110'],
+    'P': ['11110','10001','10001','11110','10000','10000','10000'],
+    'Q': ['01110','10001','10001','10001','10101','10010','01101'],
+    'R': ['11110','10001','10001','11110','10100','10010','10001'],
+    'S': ['01111','10000','10000','01110','00001','00001','11110'],
+    'T': ['11111','00100','00100','00100','00100','00100','00100'],
+    'U': ['10001','10001','10001','10001','10001','10001','01110'],
+    'V': ['10001','10001','10001','10001','10001','01010','00100'],
+    'W': ['10001','10001','10001','10101','10101','11011','10001'],
+    'X': ['10001','10001','01010','00100','01010','10001','10001'],
+    'Y': ['10001','10001','01010','00100','00100','00100','00100'],
+    'Z': ['11111','00001','00010','00100','01000','10000','11111'],
+    '0': ['01110','10001','10011','10101','11001','10001','01110'],
+    '1': ['00100','01100','00100','00100','00100','00100','01110'],
+    '2': ['01110','10001','00001','00010','00100','01000','11111'],
+    '3': ['11111','00001','00010','00110','00001','10001','01110'],
+    '4': ['00010','00110','01010','10010','11111','00010','00010'],
+    '5': ['11111','10000','10000','11110','00001','00001','11110'],
+    '6': ['00110','01000','10000','11110','10001','10001','01110'],
+    '7': ['11111','00001','00010','00100','01000','01000','01000'],
+    '8': ['01110','10001','10001','01110','10001','10001','01110'],
+    '9': ['01110','10001','10001','01111','00001','00010','01100'],
+    ' ': ['00000','00000','00000','00000','00000','00000','00000'],
+    ':': ['00000','00100','00100','00000','00100','00100','00000'],
+    '!': ['00100','00100','00100','00100','00100','00000','00100'],
+    '-': ['00000','00000','00000','11111','00000','00000','00000'],
+    '.': ['00000','00000','00000','00000','00000','00000','00100'],
+    '/': ['00001','00001','00010','00100','01000','10000','10000'],
+    '*': ['00000','10101','01110','11111','01110','10101','00000'],
+    '=': ['00000','00000','11111','00000','11111','00000','00000'],
+    '@': ['01110','10001','10101','10111','10100','10001','01110'],
+    '+': ['00000','00100','00100','11111','00100','00100','00000'],
+    "'": ['00100','00100','00100','00000','00000','00000','00000'],
+    '?': ['01110','10001','00001','00110','00100','00000','00100'],
+    '(': ['00010','00100','01000','01000','01000','00100','00010'],
+    ')': ['01000','00100','00010','00010','00010','00100','01000'],
+    '#': ['01010','01010','11111','01010','11111','01010','01010'],
+    '%': ['11000','11001','00010','00100','01000','10011','00011'],
+    '<': ['00010','00100','01000','10000','01000','00100','00010'],
+    '>': ['01000','00100','00010','00001','00010','00100','01000'],
+  };
+
+  // bitmapText: desenha `text` no contexto a partir de (x, y) com a cor dada.
+  // x, y são o canto superior-esquerdo do primeiro glifo.
+  // scale: fator inteiro de ampliação dos pixels (padrão 1).
+  // Retorna a largura total em pixels lógicos (para centralização).
+  function bitmapText(ctx, text, x, y, color, scale) {
+    scale = scale || 1;
+    var cw  = C.FONT_CW * scale;  // largura de cada glifo em pixels lógicos
+    var gap = scale;               // 1px de espaço entre glifos (escalonado)
+    ctx.fillStyle = color;
+    x = pxI(x);
+    y = pxI(y);
+    for (var ci = 0; ci < text.length; ci++) {
+      var ch_char = text[ci].toUpperCase();
+      var glyph   = FONT_GLYPHS[ch_char] || FONT_GLYPHS[' '];
+      for (var row = 0; row < glyph.length; row++) {
+        for (var col = 0; col < glyph[row].length; col++) {
+          if (glyph[row][col] === '1') {
+            ctx.fillRect(
+              x + ci * (cw + gap) + col * scale,
+              y + row * scale,
+              scale,
+              scale
+            );
+          }
+        }
+      }
+    }
+    return text.length * (cw + gap);
+  }
+
+  // bitmapTextWidth: calcula a largura em pixels lógicos sem desenhar nada.
+  function bitmapTextWidth(text, scale) {
+    scale = scale || 1;
+    return text.length * (C.FONT_CW * scale + scale);
+  }
+
+  // bitmapTextCenter: centraliza o texto em torno de cx (centro horizontal).
+  function bitmapTextCenter(ctx, text, cx, y, color, scale) {
+    var w = bitmapTextWidth(text, scale);
+    bitmapText(ctx, text, pxI(cx - w / 2), y, color, scale);
+  }
+
   // ── FUNDO ─────────────────────────────────────────────────────────────────
   function drawBackground(ctx) {
     ctx.fillStyle = C.CLR_BG;
@@ -17,53 +141,42 @@ var DK = window.DK || {};
   }
 
   // ── VIGAS ─────────────────────────────────────────────────────────────────
-  // Cada viga é desenhada como um trapézio inclinado com padrão de treliça
-  // (alternância de barras diagonais), imitando o estilo do arcade original.
+  // Desenhadas coluna a coluna com fillRect(x, y, 1, THICK) para evitar o
+  // antialiasing que o navegador aplica a paths/polígonos com bordas diagonais.
+  // Para cada coluna x de x1 a x2 calculamos a altura da superfície da viga
+  // por interpolação linear, depois desenhamos THICK pixels para baixo.
   function drawBeams(ctx) {
     var beams = DK.LEVELS[DK.game.levelIndex].beams;
-    var THICK = 5; // altura visual da viga (px)
+    var THICK = 5;  // altura visual da viga (px)
 
     beams.forEach(function (beam) {
-      var x1 = beam.x1, y1 = beam.y1, x2 = beam.x2, y2 = beam.y2;
+      var ix1 = pxI(beam.x1);
+      var ix2 = pxI(beam.x2);
+      var iy1 = pxI(beam.y1);
+      var iy2 = pxI(beam.y2);
+      var span = ix2 - ix1;
+      if (span <= 0) return;
 
-      // Corpo principal da viga (trapézio)
-      ctx.fillStyle = C.CLR_BEAM;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.lineTo(x2, y2 + THICK);
-      ctx.lineTo(x1, y1 + THICK);
-      ctx.closePath();
-      ctx.fill();
+      // Desenha coluna a coluna: evita path/fill com antialiasing diagonal
+      for (var x = ix1; x <= ix2; x++) {
+        // Altura da superfície nesta coluna (interpolação linear)
+        var t    = (x - ix1) / span;
+        var topY = pxI(iy1 + t * (iy2 - iy1));
 
-      // Padrão de treliça diagonal
-      ctx.fillStyle = '#ff4488';
-      var len   = x2 - x1;
-      var steps = Math.floor(len / 8);
-      for (var i = 0; i < steps; i++) {
-        var t1 = i / steps, t2 = (i + 1) / steps;
-        var lx1 = x1 + t1 * len, ly1 = y1 + t1 * (y2 - y1);
-        var lx2 = x1 + t2 * len, ly2 = y1 + t2 * (y2 - y1);
-        if (i % 2 === 0) {
-          ctx.fillRect(lx1, ly1 + 1, 1, 3);
-          ctx.fillRect(lx2, ly2 + 1, 1, 3);
-          for (var d = 0; d <= 1; d += 0.33) {
-            var dx = lx1 + d * (lx2 - lx1);
-            var dy = ly1 + d * (ly2 - ly1) + 2;
-            ctx.fillRect(Math.round(dx), Math.round(dy), 1, 1);
-          }
+        // Corpo principal da viga
+        ctx.fillStyle = C.CLR_BEAM;
+        ctx.fillRect(x, topY + 1, 1, THICK - 1);
+
+        // Borda superior mais clara (destaque da superfície)
+        ctx.fillStyle = '#ff88bb';
+        ctx.fillRect(x, topY, 1, 1);
+
+        // Padrão de treliça: a cada 8 px, desenha um ponto rosado no meio
+        if (((x - ix1) % 8) < 2) {
+          ctx.fillStyle = '#ff4488';
+          ctx.fillRect(x, topY + 2, 1, 2);
         }
       }
-
-      // Borda superior mais clara (destaque da superfície)
-      ctx.fillStyle = '#ff88bb';
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.lineTo(x2, y2 + 1);
-      ctx.lineTo(x1, y1 + 1);
-      ctx.closePath();
-      ctx.fill();
     });
   }
 
@@ -73,67 +186,67 @@ var DK = window.DK || {};
     var W = 8; // largura da escada
 
     ladders.forEach(function (lad) {
-      var x = lad.x, yTop = lad.yTop, yBottom = lad.yBottom;
-      // Escadas quebradas são mais escuras (decorativas)
-      var color = lad.broken ? '#007788' : C.CLR_LADDER;
+      var x       = pxI(lad.x);
+      var yTop    = pxI(lad.yTop);
+      var yBottom = pxI(lad.yBottom);
+      var color   = lad.broken ? '#007788' : C.CLR_LADDER;
 
       // Trilhos laterais
       ctx.fillStyle = color;
-      ctx.fillRect(x - W / 2,     yTop, 2, yBottom - yTop);
-      ctx.fillRect(x + W / 2 - 2, yTop, 2, yBottom - yTop);
+      ctx.fillRect(x - (W >> 1),         yTop, 2, yBottom - yTop);
+      ctx.fillRect(x + (W >> 1) - 2,     yTop, 2, yBottom - yTop);
 
-      // Degraus (escada quebrada omite a parte do meio)
-      var totalH   = yBottom - yTop;
-      var steps    = Math.floor(totalH / 4);
+      // Degraus
+      var totalH = yBottom - yTop;
+      var steps  = Math.floor(totalH / 4);
       for (var i = 0; i <= steps; i++) {
         var sy = yTop + i * 4;
         if (lad.broken && i > steps * 0.3 && i < steps * 0.7) continue;
-        ctx.fillRect(x - W / 2 + 2, sy, W - 4, 1);
+        ctx.fillRect(x - (W >> 1) + 2, sy, W - 4, 1);
       }
     });
+  }
+
+  // ── BORDA RETANGULAR SEM strokeRect ──────────────────────────────────────
+  // strokeRect com lineWidth=1 gera bordas de 0.5px em cada lado — borradas.
+  // Substituímos por quatro fillRect de 1px de espessura.
+  function fillBorder(ctx, x, y, w, h, color) {
+    ctx.fillStyle = color;
+    ctx.fillRect(x,         y,         w, 1); // topo
+    ctx.fillRect(x,         y + h - 1, w, 1); // baixo
+    ctx.fillRect(x,         y,         1, h); // esquerda
+    ctx.fillRect(x + w - 1, y,         1, h); // direita
   }
 
   // ── HUD ───────────────────────────────────────────────────────────────────
   function drawHUD(ctx) {
     var sc = DK.ScoreSystem;
 
-    ctx.font = '6px monospace';
+    // HIGH SCORE (centralizado no topo) — escala 1
+    bitmapTextCenter(ctx, 'HIGH SCORE', C.W / 2, 2, C.CLR_MARIO, 1);
 
-    // HIGH SCORE (centralizado no topo)
-    ctx.fillStyle = C.CLR_MARIO;
-    ctx.fillText('HIGH SCORE', 72, 10);
+    // Pontuações — escala 1
+    bitmapText(ctx, String(sc.score).padStart(6, '0'),     2,  10, C.CLR_HUD, 1);
+    bitmapText(ctx, String(sc.highScore).padStart(6, '0'), pxI(C.W / 2 - bitmapTextWidth('000000', 1) / 2), 10, C.CLR_HUD, 1);
 
-    // Pontuações
-    ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText(String(sc.score).padStart(6, '0'),     2,  18);
-    ctx.fillText(String(sc.highScore).padStart(6, '0'), 82, 18);
+    // Nível atual (ex: L=02) — escala 1
+    bitmapText(ctx, 'L=' + String(sc.level).padStart(2, '0'), 175, 10, C.CLR_HUD_BLU, 1);
 
-    // Nível atual (ex: L=02)
-    ctx.fillStyle = C.CLR_HUD_BLU;
-    ctx.fillText('L=' + String(sc.level).padStart(2, '0'), 175, 18);
-
-    // Ícones de vidas (mini-Marios)
+    // Ícones de vidas (mini-Marios) — mantidos como fillRect (não são texto)
     ctx.fillStyle = C.CLR_MARIO;
     for (var i = 0; i < DK.game.lives; i++) {
-      var lx = 2 + i * 12, ly = 24;
+      var lx = 2 + i * 12, ly = 18;
       ctx.fillRect(lx + 1, ly,     4, 2); // boné
       ctx.fillRect(lx,     ly + 2, 6, 2); // corpo
       ctx.fillRect(lx,     ly + 4, 2, 2); // perna esq
       ctx.fillRect(lx + 4, ly + 4, 2, 2); // perna dir
     }
 
-    // Caixa BONUS (borda ciano, valor em branco)
-    var bx = 158, by = 22;
-    ctx.strokeStyle = C.CLR_BONUS;
-    ctx.lineWidth   = 1;
-    ctx.strokeRect(bx + 0.5, by + 0.5, 62, 14);
-    ctx.fillStyle = C.CLR_BONUS;
-    ctx.fillText('BONUS', bx + 12, by + 7);
-    ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText(String(sc.bonus).padStart(5, ' '), bx + 8, by + 13);
-
-    // Sem linha separadora — ela conflitava com o sprite do DK e o box BONUS
-    // que ficam na área y=24..60 após o aumento da altura lógica do canvas.
+    // Caixa BONUS: borda com fillBorder + texto bitmap
+    var bx = pxI(158), by = pxI(18);
+    fillBorder(ctx, bx, by, 62, 16, C.CLR_BONUS);
+    bitmapText(ctx, 'BONUS', bx + 4, by + 2, C.CLR_BONUS, 1);
+    bitmapText(ctx, String(sc.bonus).padStart(5, ' '), bx + 4, by + 10, C.CLR_HUD, 1);
   }
 
   // ── TELA DE MENU ──────────────────────────────────────────────────────────
@@ -141,29 +254,32 @@ var DK = window.DK || {};
     ctx.fillStyle = C.CLR_BG;
     ctx.fillRect(0, 0, C.W, C.H);
 
-    ctx.font = '10px monospace';
-    ctx.fillStyle = C.CLR_MARIO;
-    ctx.fillText('DONKEY KONG', 56, 70);
+    // Título em escala 2 (10px → 2 × (5+1) = 12px de largura por char)
+    bitmapTextCenter(ctx, 'DONKEY KONG', C.W / 2, 62, C.CLR_MARIO, 2);
 
-    ctx.font = '6px monospace';
-    ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText('PRESSIONE  ENTER', 56, 110);
-    ctx.fillText('PARA INICIAR',     68, 122);
+    // Instruções em escala 1
+    bitmapTextCenter(ctx, 'PRESSIONE  ENTER', C.W / 2, 104, C.CLR_HUD, 1);
+    bitmapTextCenter(ctx, 'PARA INICIAR',     C.W / 2, 115, C.CLR_HUD, 1);
 
-    ctx.fillStyle = C.CLR_BONUS;
-    ctx.fillText('CONTROLES:',            68, 152);
-    ctx.fillStyle = '#aaa';
-    ctx.fillText('SETAS / A-D : MOVER',   46, 164);
-    ctx.fillText('ESPACO      : PULAR',   46, 174);
-    ctx.fillText('CIMA / BAIXO: ESCADA',  46, 184);
+    bitmapTextCenter(ctx, 'CONTROLES:', C.W / 2, 145, C.CLR_BONUS, 1);
+    bitmapText(ctx, 'SETAS/A-D  - MOVER',  pxI(C.W / 2 - bitmapTextWidth('SETAS/A-D  - MOVER', 1) / 2), 157, '#aaaaaa', 1);
+    bitmapText(ctx, 'ESPACO     - PULAR',  pxI(C.W / 2 - bitmapTextWidth('ESPACO     - PULAR', 1) / 2), 167, '#aaaaaa', 1);
+    bitmapText(ctx, 'CIMA/BAIXO - ESCADA', pxI(C.W / 2 - bitmapTextWidth('CIMA/BAIXO - ESCADA', 1) / 2), 177, '#aaaaaa', 1);
 
-    ctx.fillStyle = C.CLR_HUD_BLU;
-    ctx.fillText('HIGH SCORE: ' + String(DK.ScoreSystem.highScore).padStart(6, '0'), 50, 215);
+    bitmapTextCenter(ctx,
+      'HIGH SCORE  ' + String(DK.ScoreSystem.highScore).padStart(6, '0'),
+      C.W / 2, 208, C.CLR_HUD_BLU, 1);
 
-    // Mini DK decorativo
+    // Mini DK decorativo (mantido como fillRect — não é texto)
     ctx.fillStyle = C.CLR_DK;
-    ctx.fillRect(92, 240, 32, 24);
-    ctx.fillRect(96, 234, 24, 12);
+    ctx.fillRect(92, 230, 32, 24);
+    ctx.fillRect(96, 224, 24, 12);
+
+    // Indicador de som: "SOM: LIGADO/M" ou "SOM: DESLIGADO/M"
+    // Posicionado no canto inferior da tela do menu, discreto.
+    var somLabel = DK.audio.isMuted() ? 'SOM: DESLIGADO' : 'SOM: LIGADO';
+    var somCor   = DK.audio.isMuted() ? '#555555' : '#00cc44';
+    bitmapTextCenter(ctx, somLabel + '  M', C.W / 2, 300, somCor, 1);
   }
 
   // ── TELA GAME OVER ────────────────────────────────────────────────────────
@@ -171,15 +287,11 @@ var DK = window.DK || {};
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
     ctx.fillRect(0, 0, C.W, C.H);
 
-    ctx.font = '10px monospace';
-    ctx.fillStyle = C.CLR_MARIO;
-    ctx.fillText('GAME  OVER', 62, 130);
-
-    ctx.font = '6px monospace';
-    ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText('SCORE: ' + String(DK.ScoreSystem.score).padStart(6, '0'), 72, 150);
-    ctx.fillStyle = C.CLR_BONUS;
-    ctx.fillText('ENTER PARA REINICIAR', 40, 180);
+    // 'GAME  OVER' em escala 2
+    bitmapTextCenter(ctx, 'GAME  OVER', C.W / 2, 122, C.CLR_MARIO, 2);
+    // Placar em escala 1
+    bitmapTextCenter(ctx, 'SCORE  ' + String(DK.ScoreSystem.score).padStart(6, '0'), C.W / 2, 148, C.CLR_HUD, 1);
+    bitmapTextCenter(ctx, 'ENTER PARA REINICIAR', C.W / 2, 173, C.CLR_BONUS, 1);
   }
 
   // ── TELA LEVEL COMPLETE ───────────────────────────────────────────────────
@@ -187,91 +299,60 @@ var DK = window.DK || {};
     ctx.fillStyle = 'rgba(0,0,0,0.75)';
     ctx.fillRect(0, 0, C.W, C.H);
 
-    ctx.font = '8px monospace';
-    ctx.fillStyle = '#ffff00';
-    ctx.fillText('LEVEL COMPLETE!', 52, 130);
+    bitmapTextCenter(ctx, 'LEVEL COMPLETE!', C.W / 2, 122, '#ffff00', 2);
+    bitmapTextCenter(ctx, 'BONUS  +' + DK.ScoreSystem.bonus, C.W / 2, 148, C.CLR_HUD, 1);
+    bitmapTextCenter(ctx, 'SCORE  ' + String(DK.ScoreSystem.score).padStart(6, '0'), C.W / 2, 158, C.CLR_HUD, 1);
 
-    ctx.font = '6px monospace';
-    ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText('BONUS: +' + DK.ScoreSystem.bonus, 72, 150);
-    ctx.fillText('SCORE: ' + String(DK.ScoreSystem.score).padStart(6, '0'), 72, 162);
-
-
-    // Indica a próxima fase (só se não for a última)
-    var nextIdx = DK.game.levelIndex + 1; // levelIndex ainda não foi incrementado aqui
+    var nextIdx = DK.game.levelIndex + 1;
     if (nextIdx < DK.LEVELS.length) {
-      ctx.fillStyle = C.CLR_BONUS;
-      ctx.fillText('PROXIMO: L=' + String(nextIdx + 1).padStart(2, '0'), 68, 182);
+      bitmapTextCenter(ctx, 'PROXIMO  L=' + String(nextIdx + 1).padStart(2, '0'), C.W / 2, 174, C.CLR_BONUS, 1);
     } else {
-      // Última fase concluída — anuncia a vitória final
-      ctx.fillStyle = '#ffff00';
-      ctx.fillText('FASE FINAL COMPLETA!', 42, 182);
+      bitmapTextCenter(ctx, 'FASE FINAL COMPLETA!', C.W / 2, 174, '#ffff00', 1);
     }
   }
 
-  // ── TELA WIN FINAL (placar completo após fase 3) ─────────────────────────
-  // Tela full-screen (fundo preto sólido, não overlay) com estilo arcade.
-  // "NEW RECORD!" pisca alternando a cada 500ms usando Date.now().
+  // ── TELA WIN FINAL ────────────────────────────────────────────────────────
   function drawWinScreen(ctx) {
-    var sc   = DK.ScoreSystem;
-    var g    = DK.game;
-    // Pisca a cada 500ms: Date.now() / 500 é um inteiro que alterna par/ímpar
+    var sc    = DK.ScoreSystem;
+    var g     = DK.game;
     var blink = Math.floor(Date.now() / 500) % 2 === 0;
 
-    // Fundo preto sólido (não overlay — é a tela principal de vitória)
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, C.W, C.H);
 
-    // Título
-    ctx.font = '8px monospace';
-    ctx.fillStyle = '#ffff00';
-    ctx.fillText('CONGRATULATIONS!', 36, 60);
+    bitmapTextCenter(ctx, 'CONGRATULATIONS!', C.W / 2, 52, '#ffff00', 2);
 
-    // Separador decorativo
+    // Separadores — fillRect simples, sem borda diagonal
     ctx.fillStyle = C.CLR_BEAM;
-    ctx.fillRect(20, 68, C.W - 40, 1);
+    ctx.fillRect(20, 70, C.W - 40, 1);
 
-    // Placar
-    ctx.font = '6px monospace';
-    ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText('FINAL SCORE', 72, 90);
-    ctx.font = '8px monospace';
-    ctx.fillStyle = '#ffff00';
-    ctx.fillText(String(sc.score).padStart(6, '0'), 76, 104);
+    bitmapTextCenter(ctx, 'FINAL SCORE', C.W / 2, 82, C.CLR_HUD, 1);
+    bitmapTextCenter(ctx, String(sc.score).padStart(6, '0'), C.W / 2, 92, '#ffff00', 2);
 
-    ctx.font = '6px monospace';
-    ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText('HIGH SCORE', 74, 122);
-    ctx.fillText(String(sc.highScore).padStart(6, '0'), 82, 134);
+    bitmapTextCenter(ctx, 'HIGH SCORE', C.W / 2, 114, C.CLR_HUD, 1);
+    bitmapTextCenter(ctx, String(sc.highScore).padStart(6, '0'), C.W / 2, 124, C.CLR_HUD, 1);
 
-    // "NEW RECORD!" pisca se o score atual bate o recorde
     if (sc.score >= sc.highScore && sc.score > 0 && blink) {
-      ctx.fillStyle = '#ffff00';
-      ctx.fillText('** NEW RECORD! **', 52, 150);
+      bitmapTextCenter(ctx, '** NEW RECORD! **', C.W / 2, 140, '#ffff00', 1);
     }
 
-    // Separador
     ctx.fillStyle = C.CLR_BEAM;
-    ctx.fillRect(20, 158, C.W - 40, 1);
+    ctx.fillRect(20, 150, C.W - 40, 1);
 
-    // Estatísticas da partida
-    ctx.fillStyle = C.CLR_HUD;
-    ctx.fillText('FASES CONCLUIDAS: 3/3', 38, 174);
-    ctx.fillText('VIDAS RESTANTES:  ' + g.lives, 38, 186);
+    bitmapText(ctx, 'FASES CONCLUIDAS  3/3', pxI(C.W / 2 - bitmapTextWidth('FASES CONCLUIDAS  3/3', 1) / 2), 162, C.CLR_HUD, 1);
+    bitmapText(ctx, 'VIDAS RESTANTES   ' + g.lives, pxI(C.W / 2 - bitmapTextWidth('VIDAS RESTANTES   ' + g.lives, 1) / 2), 172, C.CLR_HUD, 1);
 
-    // Separador
     ctx.fillStyle = C.CLR_BEAM;
-    ctx.fillRect(20, 194, C.W - 40, 1);
+    ctx.fillRect(20, 182, C.W - 40, 1);
 
-    // "PRESS ENTER" piscando
     if (blink) {
-      ctx.fillStyle = C.CLR_BONUS;
-      ctx.fillText('PRESS ENTER TO PLAY AGAIN', 26, 214);
+      bitmapTextCenter(ctx, 'PRESS ENTER TO PLAY AGAIN', C.W / 2, 194, C.CLR_BONUS, 1);
     }
   }
 
   // ── RENDER PRINCIPAL ──────────────────────────────────────────────────────
-  // Chamado uma vez por frame (após todos os updates)
+  // Chamado uma vez por frame (após todos os updates).
+  // Recebe o ctx do canvas offscreen lógico (224×320).
   DK.render = function (ctx) {
     drawBackground(ctx);
 
@@ -280,31 +361,25 @@ var DK = window.DK || {};
       return;
     }
 
-    // WIN é tela full-screen — não desenha a fase por baixo
     if (DK.game.state === 'WIN') {
       drawWinScreen(ctx);
       return;
     }
 
-    // Fase ativa: desenha o cenário e entidades
     drawBeams(ctx);
     drawLadders(ctx);
     DK.OilBarrel.draw(ctx);
 
-    // Martelos coletáveis
     DK.game.hammers.forEach(function (h) { h.draw(ctx); });
 
-    // Entidades principais
     DK.DonkeyKong.draw(ctx);
     DK.Pauline.draw(ctx);
     DK.game.barrels.forEach(function (b) { b.draw(ctx); });
     DK.game.fireballs.forEach(function (fb) { fb.draw(ctx); });
     DK.Player.draw(ctx);
 
-    // HUD sempre por cima de tudo
     drawHUD(ctx);
 
-    // Overlays de estado (sobre a fase)
     if (DK.game.state === 'GAME_OVER')      drawGameOverScreen(ctx);
     if (DK.game.state === 'LEVEL_COMPLETE') drawLevelCompleteScreen(ctx);
   };

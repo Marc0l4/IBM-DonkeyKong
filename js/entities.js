@@ -152,7 +152,11 @@ var DK = window.DK || {};
       }
       if (this.hasHammer) {
         this.hammerTimer -= dt;
-        if (this.hammerTimer <= 0) this.hasHammer = false;
+        if (this.hammerTimer <= 0) {
+          this.hasHammer = false;
+          // Martelo acabou → volta à trilha da fase atual
+          DK.audio.playMusic(DK.audio.faixaPorFase(DK.game.levelIndex));
+        }
       }
       if (this.state === 'CLIMBING') {
         this._updateClimbing();
@@ -194,6 +198,7 @@ var DK = window.DK || {};
           this.state = 'JUMPING';
           this.onGround = false;
           this._jumpPressed = true;
+          DK.audio.sfx('pulo'); // SFX disparado apenas na borda de ativação do pulo
         }
       }
       if (!i.jump()) this._jumpPressed = false;
@@ -212,7 +217,13 @@ var DK = window.DK || {};
         if (this.vx !== 0) {
           this.state = 'WALKING';
           this.walkTimer++;
-          if (this.walkTimer > 8) { this.walkFrame ^= 1; this.walkTimer = 0; }
+          if (this.walkTimer > 8) {
+            this.walkFrame ^= 1;
+            this.walkTimer = 0;
+            // SFX de passo: disparado apenas no flip de frame (a cada ~8 frames),
+            // nunca a cada frame — evita sobrecarga de nodes de áudio.
+            DK.audio.sfx('andar');
+          }
         } else {
           this.state = 'IDLE';
         }
@@ -229,7 +240,12 @@ var DK = window.DK || {};
 
       if (this.vy !== 0) {
         this.climbTimer++;
-        if (this.climbTimer > 8) { this.climbFrame ^= 1; this.climbTimer = 0; }
+        if (this.climbTimer > 8) {
+          this.climbFrame ^= 1;
+          this.climbTimer = 0;
+          // SFX de degrau: mesma estratégia do andar — só no flip de frame.
+          DK.audio.sfx('escada');
+        }
       }
 
       this.y += this.vy;
@@ -291,6 +307,9 @@ var DK = window.DK || {};
       this.state = 'DEAD';
       this.deadTimer = C.DEATH_ANIM_TIME;
       this.vx = 0; this.vy = 0;
+      // Para a música e toca o SFX de morte
+      DK.audio.stopMusic();
+      DK.audio.sfx('morte');
     },
 
     hitbox: function () {
@@ -628,7 +647,7 @@ var DK = window.DK || {};
     },
 
     draw: function (ctx) {
-      var px = this.x, py = this.y;
+      var px = Math.round(this.x), py = Math.round(this.y);
       ctx.fillStyle = '#2040c0';
       ctx.fillRect(px,     py,     this.w,     this.h);
       ctx.fillStyle = '#4060e0';

@@ -63,6 +63,8 @@ var DK = window.DK || {};
       // Cria as fireballs definidas nos dados da fase
       lvl.params.fireballs.forEach(function (fd) {
         DK.game.fireballs.push(DK.createFireball(fd.beamIndex, fd.side));
+        // SFX de ignição ao nascer cada bola de fogo
+        DK.audio.sfx('fireball');
       });
     },
 

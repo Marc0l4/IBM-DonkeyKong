@@ -75,4 +75,15 @@ DK.CONST = {
   CLR_FIRE:    '#ff4400', // fogo laranja-vermelho
   CLR_FIREBALL:'#ffcc00', // bola de fogo amarela
   CLR_BG:      '#000000', // fundo preto
+
+  // ── Fonte bitmap ─────────────────────────────────────────────────────────
+  // Largura e altura de cada glifo na fonte bitmap própria.
+  // Cada caractere é desenhado em uma grade de FONT_CW × FONT_CH pixels.
+  FONT_CW: 5,  // largura do glifo (colunas de pixels)
+  FONT_CH: 7,  // altura do glifo (linhas de pixels)
+
+  // ── Áudio ─────────────────────────────────────────────────────────────────
+  // Volume do GainNode mestre (0.0 – 1.0).
+  // Mantido baixo para não sobrepor o contexto de tela cheia.
+  AUDIO_MASTER_VOL: 0.15,
 };

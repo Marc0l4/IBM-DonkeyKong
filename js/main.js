@@ -1,23 +1,38 @@
 // ===== main.js =====
 // Ponto de entrada do jogo.
 // Responsabilidades:
-//   1. Configurar o canvas (resolução lógica fixa interna + escala CSS responsiva)
-//   2. Iniciar o game loop com fixed timestep de 60 Hz
+//   1. Criar o canvas offscreen lógico de 224×320 (sem DPR, sem escala)
+//   2. Manter o canvas visível com fator inteiro k × DPR
+//   3. A cada frame: atualizar física, desenhar no offscreen, copiar para visível
+//   4. Recalcular k, DPR e dimensões do canvas visível a cada resize/mudança de zoom
 //
-// Estratégia de escala:
-//   - canvas.width / canvas.height ficam sempre na resolução lógica (224×320).
-//     Toda a física e o render trabalham nessas coordenadas — sem mudança.
-//   - canvas.style.width / canvas.style.height são ajustados pelo CSS via
-//     resizeCanvas() para que o canvas ocupe o maior espaço possível sem cortar.
-//   - Usamos escala inteira (Math.floor) quando ≥ 1 para manter pixel art nítido;
-//     escala fracionária só quando a janela for menor que a resolução lógica.
-//   - ctx.setTransform NÃO é mais usado — a escala é toda via CSS, então as
-//     coordenadas de desenho permanecem exatamente as lógicas (sem offset).
+// ── Estratégia de renderização pixel-perfect ─────────────────────────────────
 //
-// Por que NÃO usar ctx.setTransform para a escala?
-//   setTransform amplia o buffer interno do canvas, que teria que ser W×SCALE
-//   de largura. Ao usar CSS, o buffer interno permanece W×H (menor, mais rápido)
-//   e o navegador faz o upscale por hardware, sem custo na CPU do JS.
+//  offscreen (canvas fora do DOM):
+//    - Tamanho fixo: 224 × 320 px (resolução lógica do jogo)
+//    - ctx: imageSmoothingEnabled = false
+//    - Toda a lógica de desenho (renderer.js) recebe ESTE contexto
+//    - Coordenadas sempre inteiras (Math.round no render — física intocada)
+//
+//  canvas visível (#gameCanvas, no DOM):
+//    - Tamanho do buffer: 224*k × 320*k  (em pixels físicos)
+//    - Tamanho CSS:       (224*k/dpr) × (320*k/dpr)  (em px CSS inteiros)
+//    - imageSmoothingEnabled = false  (reaplicado sempre que canvas.width/height mudam)
+//    - Recebe o offscreen via drawImage sem interpolação
+//
+//  k (fator de escala inteiro):
+//    k = Math.max(1, Math.floor(Math.min(
+//          window.innerWidth  * dpr / 224,
+//          window.innerHeight * dpr / 320
+//        )))
+//    Garantir k inteiro preserva pixel art: cada pixel lógico mapeia para k×k
+//    pixels físicos exatos, sem meias amostras.
+//
+// Por que NÃO usar ctx.scale(dpr) no offscreen?
+//   O offscreen tem exatamente W×H pixels. O código de desenho usa coordenadas
+//   lógicas diretamente. Não há escala intermediária que possa gerar frações.
+//   A escala final (para o DPR e para a janela) acontece apenas no drawImage,
+//   uma operação de hardware sem antialiasing quando imageSmoothingEnabled=false.
 
 var DK = window.DK || {};
 
@@ -25,63 +40,95 @@ var DK = window.DK || {};
   'use strict';
 
   var C      = DK.CONST;
+
+  // ── CANVAS OFFSCREEN LÓGICO ──────────────────────────────────────────────
+  // Não é inserido no DOM. Tem exatamente 224×320 px — a resolução lógica.
+  // Todo o desenho do jogo acontece aqui, sem escala por DPR.
+  var offscreen    = document.createElement('canvas');
+  offscreen.width  = C.W;
+  offscreen.height = C.H;
+  var offCtx       = offscreen.getContext('2d');
+  offCtx.imageSmoothingEnabled = false;
+
+  // Expõe o offscreen para possível uso de debug (não é necessário para o jogo)
+  DK._offscreen = offscreen;
+
+  // ── CANVAS VISÍVEL ───────────────────────────────────────────────────────
   var canvas = document.getElementById('gameCanvas');
   var ctx    = canvas.getContext('2d');
 
-  // ── RESOLUÇÃO FÍSICA DO BUFFER (leva em conta o devicePixelRatio) ────────
-  // Em telas HiDPI (Retina, Windows 125%/150%), o navegador mapeia 1 px CSS
-  // para dpr px físicos. Se o buffer interno tiver só 224px e o CSS esticar
-  // para 672px, o navegador usa interpolação bilinear → borrão.
-  //
-  // Solução: o buffer interno é dpr vezes maior (ex: 448×640 em dpr=2).
-  // Escalamos o contexto por dpr uma única vez, então todo o código de desenho
-  // continua usando as coordenadas lógicas (224×320) — sem mudança nas outras
-  // funções.
-  //
-  // IMPORTANTE: canvas.width/height NÃO são alterados no resize para não
-  // resetar o contexto (o que desligaria imageSmoothingEnabled).
-  // Só são definidos aqui, uma vez.
-  var dpr = window.devicePixelRatio || 1;
+  // ── CÁLCULO DE ESCALA ────────────────────────────────────────────────────
+  // dpr:  devicePixelRatio atual (pode mudar com zoom do navegador)
+  // k:    fator inteiro mínimo 1 que cabe na viewport física
+  // bW/bH: dimensões do buffer visível em pixels físicos (224*k × 320*k)
+  // cW/cH: dimensões CSS do canvas (bW/dpr × bH/dpr) — sempre inteiros
+  var dpr, k, bW, bH;
 
-  canvas.width  = C.W * dpr;
-  canvas.height = C.H * dpr;
-
-  // Desliga suavização APÓS definir canvas.width/height (definir as dimensões
-  // reseta o contexto 2D, apagando qualquer configuração anterior).
-  ctx.imageSmoothingEnabled = false;
-
-  // Escala o contexto para que 1 unidade de desenho = 1 px lógico.
-  // Assim todo o código de render/física permanece em coordenadas 224×320.
-  ctx.scale(dpr, dpr);
-
-  // ── RESIZE RESPONSIVO (só altera canvas.style, nunca canvas.width/height) ──
-  // Calcula a maior escala CSS que cabe na viewport.
-  // Usa escala inteira (Math.floor) quando ≥ 1 para preservar pixel art nítido.
-  // Em janelas muito pequenas (< resolução lógica) usa fracionária para caber.
-  // Math.round final garante que style.width/height seja sempre inteiro de px CSS,
-  // evitando sub-pixel rendering que borra o canvas.
-  function resizeCanvas() {
-    var scaleX = window.innerWidth  / C.W;
-    var scaleY = window.innerHeight / C.H;
-    var scale  = Math.min(scaleX, scaleY);
-
-    // Escala inteira para pixel art; fracionária só se a janela for menor que o jogo
-    if (scale >= 1) scale = Math.floor(scale);
-
-    // Math.round elimina sub-pixels CSS (ex: 224 * 2.99 = 670.x → 671px inteiro)
-    canvas.style.width  = Math.round(C.W * scale) + 'px';
-    canvas.style.height = Math.round(C.H * scale) + 'px';
+  function calcScale() {
+    dpr = window.devicePixelRatio || 1;
+    k   = Math.max(1, Math.floor(Math.min(
+            window.innerWidth  * dpr / C.W,
+            window.innerHeight * dpr / C.H
+          )));
+    bW  = C.W * k;  // largura do buffer visível (px físicos)
+    bH  = C.H * k;  // altura do buffer visível (px físicos)
   }
 
-  // Chama imediatamente e a cada resize da janela
-  resizeCanvas();
+  // ── CONFIGURAÇÃO DO CANVAS VISÍVEL ───────────────────────────────────────
+  // Redimensiona o buffer do canvas visível e reaplica imageSmoothingEnabled.
+  // ATENÇÃO: atribuir canvas.width/height reseta TODAS as propriedades do
+  // contexto 2D (incluindo imageSmoothingEnabled). Por isso reaplicamos logo
+  // após cada mudança de dimensão.
+  function applyCanvasSize() {
+    canvas.width  = bW;
+    canvas.height = bH;
+    // Contexto foi resetado pelo resize — reaplica configurações necessárias
+    ctx.imageSmoothingEnabled = false;
+
+    // Tamanho CSS em px inteiros para evitar sub-pixel rendering do elemento
+    canvas.style.width  = Math.round(bW / dpr) + 'px';
+    canvas.style.height = Math.round(bH / dpr) + 'px';
+  }
+
+  // ── RESIZE HANDLER ───────────────────────────────────────────────────────
+  // Chamado ao redimensionar a janela OU quando o zoom/DPR mudar.
+  // window.matchMedia com (resolution) detecta mudança de DPR (zoom do browser).
+  function resizeCanvas() {
+    var prevK   = k;
+    var prevDpr = dpr;
+    calcScale();
+    // Só reaplica se algo mudou (evita reset desnecessário do contexto)
+    if (k !== prevK || dpr !== prevDpr) {
+      applyCanvasSize();
+    }
+  }
+
+  // Calcula escala inicial e configura o canvas pela primeira vez
+  calcScale();
+  applyCanvasSize();
+
+  // Ouve resize de janela
   window.addEventListener('resize', resizeCanvas);
 
+  // Ouve mudança de DPR (zoom do navegador altera window.devicePixelRatio).
+  // matchMedia com media query de resolução dispara quando o DPR muda.
+  // Registramos e removemos o listener dinamicamente para sempre monitorar
+  // o DPR atual, não um valor capturado no início.
+  (function registrarMediaQueryDPR() {
+    var mq = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)');
+    function aoMudarDPR() {
+      mq.removeEventListener('change', aoMudarDPR);
+      resizeCanvas();
+      registrarMediaQueryDPR(); // re-registra para o novo DPR
+    }
+    mq.addEventListener('change', aoMudarDPR);
+  }());
+
   // ── GAME LOOP (Fixed Timestep 60 Hz) ─────────────────────────────────────
-  // O timestep fixo garante que a física seja idêntica em qualquer monitor
-  // (60 Hz, 144 Hz, etc.). O acumulador absorve o tempo "sobrando".
+  // Física e lógica a 60 Hz fixos.
+  // Render: desenha no offscreen lógico, depois copia para o canvas visível.
   var FIXED_DT       = 1 / 60;
-  var MAX_FRAME_TIME = 0.25;  // teto: evita "death spiral" se a aba ficar em background
+  var MAX_FRAME_TIME = 0.25;
   var lastTime       = 0;
   var accumulator    = 0;
 
@@ -98,7 +145,14 @@ var DK = window.DK || {};
       accumulator -= FIXED_DT;
     }
 
-    DK.render(ctx);
+    // 1) Desenha no canvas offscreen lógico (224×320, coordenadas inteiras)
+    DK.render(offCtx);
+
+    // 2) Copia offscreen → canvas visível sem suavização
+    //    drawImage com src=offscreen e dst=(0,0,bW,bH) escala de 224→bW por
+    //    hardware, sem antialiasing pois imageSmoothingEnabled=false.
+    ctx.drawImage(offscreen, 0, 0, bW, bH);
+
     requestAnimationFrame(gameLoop);
   }
 

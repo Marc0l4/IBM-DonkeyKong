@@ -57,6 +57,10 @@ var DK = window.DK || {};
     DK.FireballSystem.reset();
     DK.ScoreSystem.reset();        // reseta apenas o bonus (score e vidas são mantidos)
     DK.ScoreSystem.level = DK.game.levelIndex + 1;
+
+    // Toca a trilha da fase correspondente ao levelIndex atual.
+    // playMusic() é idempotente: se a mesma faixa já estiver tocando, não reinicia.
+    DK.audio.playMusic(DK.audio.faixaPorFase(DK.game.levelIndex));
   };
 
   // ── INÍCIO DO JOGO (do zero) ──────────────────────────────────────────────
@@ -77,6 +81,10 @@ var DK = window.DK || {};
     if (g.state === 'MENU') {
       if (inp.enter() && !g._enterPressed) {
         g._enterPressed = true;
+        // Primeiro gesto do usuário: inicializa o áudio (política de autoplay)
+        // e toca a faixa do menu. init() é idempotente — seguro chamar toda vez.
+        DK.audio.init();
+        DK.audio.playMusic('menu');
         DK.startGame();
       }
       if (!inp.enter()) g._enterPressed = false;
@@ -88,6 +96,8 @@ var DK = window.DK || {};
       if (inp.enter() && !g._enterPressed) {
         g._enterPressed = true;
         g.state = 'MENU';
+        // Volta ao menu → toca faixa do menu
+        DK.audio.playMusic('menu');
       }
       if (!inp.enter()) g._enterPressed = false;
       return;
@@ -101,8 +111,11 @@ var DK = window.DK || {};
         if (g.levelIndex >= DK.LEVELS.length) {
           // Última fase concluída → WIN final
           g.state = 'WIN';
+          // A música já foi parada no evento de toque na Pauline;
+          // toca o jingle de vitória apenas ao entrar neste estado.
+          DK.audio.sfx('vitoria');
         } else {
-          DK.startLevel();
+          DK.startLevel(); // startLevel chama playMusic internamente
         }
       }
       return;
@@ -127,11 +140,15 @@ var DK = window.DK || {};
         g.lives--;
         if (g.lives <= 0) {
           g.state = 'GAME_OVER';
+          // Música já foi parada em Player.die(); toca o jingle de game over.
+          DK.audio.sfx('gameOver');
         } else {
           DK.Player.reset();
           DK.BarrelSpawner.reset();
           DK.ScoreSystem.bonus = DK.LEVELS[g.levelIndex].params.bonusStart;
           DK.ScoreSystem.bonusTimer = 0;
+          // Retoma a trilha da fase após reiniciar (a música foi parada em die())
+          DK.audio.playMusic(DK.audio.faixaPorFase(g.levelIndex));
         }
       }
       return; // não verifica colisões enquanto Mario está morto
@@ -139,29 +156,31 @@ var DK = window.DK || {};
     DK.Player.update(dt);
 
     // ── COLISÃO: Mario × Barris ───────────────────────────────────────────
-    g.barrels.forEach(function (b, idx) {
-      if (b.state === 'DEAD') return;
+  g.barrels.forEach(function (b, idx) {
+    if (b.state === 'DEAD') return;
 
-      // Pulo sobre barril (Mario subindo, barrel abaixo): +100 pts
-      // Só conta na subida (vy < 0) e só uma vez por barril por pulo
-      if (DK.Player.state === 'JUMPING' && DK.Player.vy < 0) {
-        var pi = DK.physics.rectOverlap(DK.Player.hitbox(), { x: b.x - 4, y: b.y, w: b.w + 8, h: b.h });
-        if (pi && g._jumpedBarrels.indexOf(idx) === -1) {
-          g._jumpedBarrels.push(idx);
-          DK.ScoreSystem.add(C.SCORE_JUMP_BARREL);
-        }
+    // Pulo sobre barril (Mario subindo, barrel abaixo): +100 pts
+    // Só conta na subida (vy < 0) e só uma vez por barril por pulo
+    if (DK.Player.state === 'JUMPING' && DK.Player.vy < 0) {
+      var pi = DK.physics.rectOverlap(DK.Player.hitbox(), { x: b.x - 4, y: b.y, w: b.w + 8, h: b.h });
+      if (pi && g._jumpedBarrels.indexOf(idx) === -1) {
+        g._jumpedBarrels.push(idx);
+        DK.ScoreSystem.add(C.SCORE_JUMP_BARREL);
+        DK.audio.sfx('puloBônus'); // +100 pontos por pular sobre barril
       }
+    }
 
-      // Colisão direta
-      if (DK.physics.rectOverlap(DK.Player.hitbox(), b.hitbox())) {
-        if (DK.Player.hasHammer) {
-          b.state = 'DEAD';
-          DK.ScoreSystem.add(C.SCORE_HAMMER_BARREL);
-        } else {
-          DK.Player.die();
-        }
+    // Colisão direta
+    if (DK.physics.rectOverlap(DK.Player.hitbox(), b.hitbox())) {
+      if (DK.Player.hasHammer) {
+        b.state = 'DEAD';
+        DK.ScoreSystem.add(C.SCORE_HAMMER_BARREL);
+        DK.audio.sfx('martelada'); // barril destruído com martelo
+      } else {
+        DK.Player.die();
       }
-    });
+    }
+  });
 
     // Limpa o registro de barris pulados quando Mario pousa
     if (DK.Player.state !== 'JUMPING') g._jumpedBarrels = [];
@@ -181,6 +200,9 @@ var DK = window.DK || {};
         h.active = false;
         DK.Player.hasHammer  = true;
         DK.Player.hammerTimer = C.HAMMER_DURATION;
+        // Martelo coletado: SFX + troca para faixa do martelo
+        DK.audio.sfx('pegaMartelo');
+        DK.audio.playMusic('martelo');
       }
     });
 
@@ -189,6 +211,9 @@ var DK = window.DK || {};
       DK.ScoreSystem.add(DK.ScoreSystem.bonus); // bonus restante vira pontos
       g.state = 'LEVEL_COMPLETE';
       g.levelCompleteTimer = C.LEVEL_COMPLETE_TIME;
+      // Para a música e toca o jingle de fase concluída
+      DK.audio.stopMusic();
+      DK.audio.sfx('faseConcluida');
     }
   };
 
